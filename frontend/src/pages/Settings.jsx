@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui/Button';
 import { FileUploadArea } from '../components/ui/FileUploadArea';
 import { Card } from '../components/ui/Card';
+import CompanyVoiceSettings from '../components/CompanyVoiceSettings';
 import EmailVerificationSettings from '../components/EmailVerificationSettings';
 
 const SETTINGS_TABS = [
@@ -21,6 +22,7 @@ const SETTINGS_TABS = [
 /** In-tab section anchors (DOM id = `settings-${id}`). */
 const SECTIONS_BY_TAB = {
   general: [
+    { id: 'company-voice', label: 'LLM Company Voice' },
     { id: 'scheduling', label: 'Scheduling' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'account', label: 'Account & Security' },
@@ -770,6 +772,7 @@ export default function Settings() {
 
         {activeTab === 'general' && (
           <>
+        <CompanyVoiceSettings />
         <section id="settings-scheduling" className="mb-10 scroll-mt-6">
           <h2 className="text-lg font-semibold mb-3 border-b border-gray-200 dark:border-gray-700 pb-2">Scheduling</h2>
           <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">Controls how Recalculate All Campaigns distributes emails.</p>

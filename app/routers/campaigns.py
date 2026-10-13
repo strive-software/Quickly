@@ -41,6 +41,8 @@ from app.campaign_lead_status import (
     normalize_interest,
 )
 from app.schemas import (
+    LeadProfile,
+    LinkedInMessage,
     CampaignCreate,
     CampaignUpdate,
     CampaignResponse,
@@ -88,6 +90,7 @@ def _campaign_to_response(
         id=campaign.id,
         public_id=campaign.public_id or str(campaign.id),
         name=campaign.name,
+        llm_voice=campaign.llm_voice,
         inbox_ids=inbox_ids,
         sending_days=campaign.sending_days or [0, 1, 2, 3, 4],
         sending_hours_start=campaign.sending_hours_start or "09:00",
@@ -287,6 +290,7 @@ async def create_campaign(data: CampaignCreate, db: AsyncSession = Depends(get_d
     #     raise HTTPException(400, "At least one inbox required")
     campaign = Campaign(
         name=data.name,
+        llm_voice=data.llm_voice,
         sending_days=data.sending_days,
         sending_hours_start=data.sending_hours_start,
         sending_hours_end=data.sending_hours_end,
@@ -489,6 +493,8 @@ async def update_campaign(
     if not campaign:
         raise HTTPException(404, "Campaign not found")
     needs_global_recalc = False
+    if data.llm_voice is not None:
+        campaign.llm_voice = data.llm_voice
     if data.name is not None:
         campaign.name = data.name
     if data.inbox_ids is not None:
@@ -626,6 +632,7 @@ async def duplicate_campaign(campaign_id: int, db: AsyncSession = Depends(get_db
     # Create new campaign
     new_campaign = Campaign(
         name=f"{original.name} (Copy)",
+        llm_voice=original.llm_voice,
         sending_days=original.sending_days,
         sending_hours_start=original.sending_hours_start,
         sending_hours_end=original.sending_hours_end,
@@ -2058,6 +2065,7 @@ async def bulk_add_leads_to_campaign(
                 lead = Lead(
                     email=email,
                     name=entry.name or "",
+                    **entry.model_dump(include=set(LeadProfile.model_fields)),
                     custom_data=entry.custom_data or {},
                 )
                 db.add(lead)
@@ -2074,6 +2082,10 @@ async def bulk_add_leads_to_campaign(
                     changed = True
                 if changed:
                     await db.flush()
+
+            for key, value in entry.model_dump(include=set(LeadProfile.model_fields), exclude_unset=True).items():
+                setattr(lead, key, value)
+            await db.flush()
 
             # Check enrollment
             if skip_duplicates:
@@ -2728,7 +2740,7 @@ async def import_campaign_leads(
         }
 
     _csv_reserved_lower = frozenset(
-        {"email", "name", "status", "interest", "email_verification_status"}
+        {"email", "name", "status", "interest", "email_verification_status", "lead_linkedin_messages"} | {f"lead_{key}" for key in LeadProfile.model_fields}
     )
 
     added = 0
@@ -2785,10 +2797,20 @@ async def import_campaign_leads(
             return None
 
         try:
+            profile = LeadProfile(**{key: _csv_cell(f"lead_{key}") for key in LeadProfile.model_fields
+                                     if _csv_cell(f"lead_{key}") is not None})
+            messages = None
+            if _csv_cell("lead_linkedin_messages"):
+                raw_messages = json.loads(_csv_cell("lead_linkedin_messages"))
+                if not isinstance(raw_messages, list) or len(raw_messages) > 3:
+                    raise ValueError("LinkedIn messages must be an array of up to three messages")
+                messages = [LinkedInMessage(**m).model_dump(mode="json") for m in raw_messages]
+                if any(bool(m["sent_at"]) != m["sent"] or (m["sent"] and not m["message"].strip()) for m in messages):
+                    raise ValueError("LinkedIn sent messages require text and sent_at")
             lead_result = await db.execute(select(Lead).where(Lead.email == email))
             lead = lead_result.scalar_one_or_none()
             if not lead:
-                lead = Lead(email=email, name=name, custom_data=custom_data)
+                lead = Lead(email=email, name=name, custom_data=custom_data, **profile.model_dump())
                 db.add(lead)
                 await db.flush()
             else:
@@ -2803,6 +2825,12 @@ async def import_campaign_leads(
                         changed = True
                 if changed:
                     await db.flush()
+
+            for key, value in profile.model_dump(exclude_unset=True).items():
+                setattr(lead, key, value)
+            if messages is not None:
+                lead.linkedin_messages = messages
+            await db.flush()
 
             if skip_duplicates:
                 # Global check: skip if enrolled in any campaign

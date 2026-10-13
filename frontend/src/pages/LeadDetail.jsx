@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import LeadOutreachFields from '../components/LeadOutreachFields';
 import { api } from '../api';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -86,6 +87,8 @@ export default function LeadDetail() {
           </span>
         )}
       </div>
+
+      <LeadOutreachFields key={lead.id} lead={lead} />
 
       <Card className="p-4">
         <h2 className="text-lg font-semibold mb-3 border-b border-gray-200 dark:border-gray-700 pb-2">

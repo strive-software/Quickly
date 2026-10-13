@@ -39,3 +39,5 @@ AGENTS.md
 tasks.md
 .omo/
 .commandcode/
+frontend/test-results/
+frontend/playwright-report/

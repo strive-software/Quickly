@@ -2669,7 +2669,7 @@ function CustomEmailEditorModal({ target, campaignId, onClose, onSaved }) {
         setSubject('');
         setBody('');
       }
-      setIsHtml(sequence?.is_html ?? false);
+      setIsHtml(ps?.is_html ?? sequence?.is_html ?? false);
       setSubjectError('');
       setBodyError('');
     }

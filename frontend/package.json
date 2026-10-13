@@ -12,22 +12,26 @@
     "class-variance-authority": "^0.7.1",
     "classnames": "^2.5.1",
     "darkreader": "^4.9.120",
-    "dompurify": "^3.3.1",
+    "dompurify": "3.4.17",
     "react": "^18.2.0",
     "react-beautiful-dnd": "^13.1.1",
     "react-dom": "^18.2.0",
     "react-icons": "^5.5.0",
-    "react-quill": "^2.0.0",
-    "react-router-dom": "^6.12.1",
+    "react-quill": "npm:react-quill-new@3.7.0",
+    "react-router-dom": "7.18.4",
     "recharts": "^3.7.0",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@tailwindcss/forms": "^0.5.11",
-    "@vitejs/plugin-react": "^5.1.4",
+    "@vitejs/plugin-react": "6.1.2",
     "autoprefixer": "^10.4.14",
     "postcss": "^8.4.28",
     "tailwindcss": "^3.3.4",
-    "vite": "^5.4.21"
+    "vite": "8.3.4"
+  },
+  "overrides": {
+    "quill": "2.0.2"
   }
 }

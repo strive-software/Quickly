@@ -1091,6 +1091,8 @@ async def list_campaign_leads(campaign_id: int, db: AsyncSession = Depends(get_d
                 "sequence_id": sid,
                 "sequence_position": spos,
                 "subject": details.get("subject"),
+                "body": details.get("body"),
+                "is_html": details.get("is_html"),
                 "written": is_written,
                 "already_sent": already_sent,
             })

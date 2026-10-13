@@ -494,7 +494,7 @@ List leads with optional filters. Each item includes enrollments and verificatio
 
 Download leads as **CSV** (`text/csv`). Uses the **same filters** as `GET /api/leads` (`q`, `status`, `bad_only`, `interest`), with the same stacking rules.
 
-**Columns:** `id`, `email`, `name`, `email_verification_status`, `campaigns` (semicolon-separated names), **`enrollments_json`** (JSON array of per-campaign enrollment slices: `campaign_id`, `campaign_public_id`, `campaign_name`, `status`, `interest`, `opened`, `clicked`, `replied`, `sending_paused`), `enrolled_earliest` (ISO date), then every **`custom_data` key** (sorted alphabetically). Object/array values in `custom_data` are JSON-encoded in the cell.
+**Columns:** `id`, `email`, `name`, `email_verification_status`, `campaigns` (semicolon-separated names), **`enrollments_json`** (JSON array of per-campaign enrollment slices: `campaign_id`, `campaign_public_id`, `campaign_name`, `status`, `interest`, `opened`, `clicked`, `replied`, `sending_paused`), `enrolled_earliest` (ISO date), then dedicated profile columns (`lead_priority`, `lead_job_title`, `lead_role_description`, `lead_apollo_id`, `lead_notes`, `lead_linkedin_url`, `lead_linkedin_paused`, `lead_linkedin_replied_at`, `lead_linkedin_messages`), then every **`custom_data` key** (sorted alphabetically, excluding reserved profile column names). Object/array values in `custom_data` are JSON-encoded in the cell.
 
 **Response:** File download (`Content-Disposition: attachment; filename="leads_export.csv"` or `leads_bounced_invalid.csv` when `bad_only=true`).
 
@@ -766,7 +766,7 @@ Export the campaign's leads as a CSV file.
 
 ### `POST /api/campaigns/{id}/leads/import`
 
-Import leads from a CSV file. Expects an `email` column; `name` and any extra columns become `custom_data`. Reserved columns (not merged into `custom_data`): **`status`**, **`interest`**, **`email_verification_status`** (same semantics as bulk add).
+Import leads from a CSV file. Expects an `email` column; `name` sets the lead name and extra columns become `custom_data`. Dedicated profile fields use reserved `lead_`-prefixed columns (listed under lead export); `lead_linkedin_messages` is a JSON array of up to three message records. Unprefixed `job_title`, `notes`, `priority`, and similar columns continue to populate custom template fields. Reserved columns (not merged into `custom_data`): **`status`**, **`interest`**, **`email_verification_status`** (same semantics as bulk add).
 
 **Query params:** `skip_duplicates` (default `true`), `verify_emails` (default `false`)
 

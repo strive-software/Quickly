@@ -10,7 +10,7 @@ import urllib.parse
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -1211,3 +1211,21 @@ async def test_custom_email_verification(
 
     return {"results": results}
 
+
+
+class CompanyVoice(BaseModel):
+    company_voice: str = Field(default="", max_length=20000)
+
+
+@router.get("/llm-voice", response_model=CompanyVoice)
+async def get_company_voice(db: AsyncSession = Depends(get_db)):
+    """Global writing rules for LLMs; combine with the campaign's llm_voice."""
+    from app.app_settings import get_setting
+    return CompanyVoice(company_voice=await get_setting(db, "llm_company_voice") or "")
+
+
+@router.put("/llm-voice", response_model=CompanyVoice)
+async def set_company_voice(data: CompanyVoice, db: AsyncSession = Depends(get_db)):
+    from app.app_settings import put_setting
+    await put_setting(db, "llm_company_voice", data.company_voice)
+    return data

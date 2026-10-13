@@ -134,6 +134,15 @@ class Inbox(Base):
 
 
 class Lead(Base):
+    priority = Column(String(16), nullable=False, default="normal", server_default="normal")
+    job_title = Column(String(255), nullable=False, default="", server_default="")
+    role_description = Column(Text, nullable=False, default="", server_default="")
+    apollo_id = Column(String(255), nullable=False, default="", server_default="")
+    notes = Column(Text, nullable=False, default="", server_default="")
+    linkedin_url = Column(String(2048), nullable=False, default="", server_default="")
+    linkedin_paused = Column(Boolean, nullable=False, default=False, server_default="false")
+    linkedin_replied_at = Column(DateTime(timezone=True), nullable=True)
+    linkedin_messages = Column(JSON, nullable=False, default=list, server_default="[]")
     __tablename__ = "lead"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), nullable=False, index=True)
@@ -158,6 +167,7 @@ class Lead(Base):
 
 
 class Campaign(Base):
+    llm_voice = Column(Text, nullable=False, default="", server_default="")
     __tablename__ = "campaign"
     id = Column(Integer, primary_key=True, index=True)
     public_id = Column(String(16), unique=True, nullable=False, index=True, default=_make_public_id)

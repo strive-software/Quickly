@@ -1826,6 +1826,7 @@ function SettingsTab({ campaign, inboxes, onSave, campaignId }) {
   const notify  = useNotify();
   const [form, setForm] = useState({
     name:                  campaign.name,
+    llm_voice: campaign.llm_voice || '',
     inbox_ids:             campaign.inbox_ids         || [],
     sending_days:          campaign.sending_days      || [0,1,2,3,4],
     sending_hours_start:   campaign.sending_hours_start || '09:00',
@@ -1938,6 +1939,10 @@ function SettingsTab({ campaign, inboxes, onSave, campaignId }) {
           />
         </div>
 
+        <label className="block text-sm font-medium">Sequence LLM Voice
+          <textarea rows={6} maxLength={20000} className="block w-full border rounded p-3 mt-2" value={form.llm_voice} onChange={e => setForm(f => ({ ...f, llm_voice: e.target.value }))} />
+          <span className="block text-xs text-gray-500 mt-1">Rules for this whole sequence, used alongside the global LLM Company Voice.</span>
+        </label>
         {/* Custom sequence mode */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">Custom sequence mode</label>

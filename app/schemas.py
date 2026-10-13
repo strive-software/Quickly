@@ -1,5 +1,5 @@
 """Pydantic schemas for API and validation."""
-from pydantic import AliasChoices, BaseModel, EmailStr, Field
+from pydantic import AwareDatetime, AliasChoices, BaseModel, EmailStr, Field
 from typing import Literal, Optional, Dict, Any, List
 from datetime import datetime, time
 from app.models import WEBHOOK_EVENT_TYPES
@@ -30,13 +30,36 @@ class LeadCampaignInfo(BaseModel):
         from_attributes = True
 
 
-class LeadCreate(BaseModel):
+class LeadProfile(BaseModel):
+    priority: Literal["low", "normal", "high"] = "normal"
+    job_title: str = Field(default="", max_length=255)
+    role_description: str = Field(default="", max_length=20000)
+    apollo_id: str = Field(default="", max_length=255)
+    notes: str = Field(default="", max_length=50000)
+    linkedin_url: str = Field(default="", max_length=2048, pattern=r"^(https://([a-zA-Z0-9-]+\.)?linkedin\.com/[^\s]*|)$")
+    linkedin_paused: bool = False
+    linkedin_replied_at: Optional[AwareDatetime] = None
+
+
+class LinkedInMessage(BaseModel):
+    message: str = Field(default="", max_length=10000)
+    sent: bool = False
+    sent_at: Optional[AwareDatetime] = None
+
+
+class LinkedInMessagePatch(BaseModel):
+    message: Optional[str] = Field(default=None, max_length=10000)
+    sent: Optional[bool] = None
+    sent_at: Optional[AwareDatetime] = None
+
+
+class LeadCreate(LeadProfile):
     email: str
     name: str = ""
     custom_data: Dict[str, Any] = {}
 
 
-class LeadUpdate(BaseModel):
+class LeadUpdate(LeadProfile):
     name: Optional[str] = None
     custom_data: Optional[Dict[str, Any]] = None
     # Applied to every CampaignLead row for this lead (queue may recalculate)
@@ -56,7 +79,9 @@ class LeadRecoverRequest(BaseModel):
     verify_email: bool = True
 
 
-class LeadResponse(BaseModel):
+class LeadResponse(LeadProfile):
+    linkedin_messages: List[LinkedInMessage] = Field(default_factory=list, max_length=3)
+    last_email_sent_at: Optional[datetime] = None
     id: int
     email: str
     name: str
@@ -276,6 +301,7 @@ class CustomEmailWrite(BaseModel):
 
 
 class CampaignCreate(BaseModel):
+    llm_voice: str = Field(default="", max_length=20000)
     name: str
     inbox_ids: List[int]  # at least one; order = priority for slot assignment
     sending_days: List[int] = [0, 1, 2, 3, 4]  # Mon=0 .. Sun=6
@@ -304,6 +330,7 @@ class CampaignCreate(BaseModel):
 
 
 class CampaignUpdate(BaseModel):
+    llm_voice: Optional[str] = Field(default=None, max_length=20000)
     name: Optional[str] = None
     inbox_ids: Optional[List[int]] = None
     sending_days: Optional[List[int]] = None
@@ -361,6 +388,7 @@ class CampaignStats(BaseModel):
 
 
 class CampaignResponse(BaseModel):
+    llm_voice: str = Field(default="", max_length=20000)
     id: int
     public_id: str
     name: str
@@ -394,7 +422,7 @@ class AddLeadToCampaign(BaseModel):
     lead_id: int
 
 
-class CampaignLeadAdd(BaseModel):
+class CampaignLeadAdd(LeadProfile):
     """Used for adding (and optionally creating) leads directly from a campaign."""
     email: str
     name: str = ""

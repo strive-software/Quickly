@@ -267,3 +267,33 @@ If Quickly is saving you money or replacing a paid tool in your workflow, a ⭐ 
 ## License
 
 [MIT](LICENSE) — free to use, modify, and self-host forever.
+
+
+### Lead profiles and LLM outreach context
+
+Lead details include priority (`low`, `normal`, `high`), job title, role description,
+Apollo ID, notes, and a dedicated LinkedIn fieldset. These are available through
+`GET /api/leads/{id}` and `PATCH /api/leads/{id}` as well as the generated MCP tools.
+
+Each lead has up to three optional LinkedIn messages. Update a single slot with
+`PATCH /api/leads/{id}/linkedin/{position}` (positions 1–3): `message`, `sent`, and
+`sent_at`. Marking sent sets the timestamp; unmarking clears it. An explicit
+ISO timestamp with a timezone records a historical manual send. These operations
+only maintain records; they do not send LinkedIn messages.
+
+`GET /api/leads?linkedin_pending=true` selects high-priority leads with a tracked
+email send and an unsent nonempty draft, excluding LinkedIn pauses/replies,
+tracked email replies, and suppressed lead statuses. `priority`, `has_sent_email`,
+and `apollo_id` can also be filtered separately. Manual emails must first be
+recorded in Quickly's email history to count as sent.
+
+Global **LLM Company Voice** is under Settings → General (`GET/PUT
+/api/settings/llm-voice`, field `company_voice`). **Sequence LLM Voice** is under
+campaign settings (`llm_voice` on campaign create/read/update). It applies to the
+whole sequence. LLM clients should read both rulesets when drafting; storing rules
+does not automatically regenerate existing content.
+
+CSV import/export uses `lead_`-prefixed columns for dedicated profile fields
+(e.g. `lead_job_title`, `lead_apollo_id`, `lead_linkedin_messages`). Message slots
+use a JSON array. Unprefixed columns such as `job_title` remain custom template
+fields; dedicated profile fields do not automatically become template variables.

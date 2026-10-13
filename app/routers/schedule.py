@@ -73,26 +73,20 @@ def _utc_iso(dt) -> "str | None":
 
 def _serialize_sent(
     el, lead, campaign, seq, inbox, campaign_lead, include_body: bool, include_events: bool,
-    resolved_content: dict | None = None,
 ) -> dict:
     enr = (
         (getattr(campaign_lead, "enrollment_status", None) or "active")
         if campaign_lead is not None
         else (lead.status or "active")
     )
-    # Use pre-resolved content (with variables rendered, variant applied) if available
-    if resolved_content and include_body:
-        body = resolved_content["body"]
-        is_html = resolved_content["is_html"]
-        variant_id = resolved_content.get("variant_id")
-        has_variants = resolved_content.get("has_variants", False)
-    else:
-        body = seq.body if (seq and include_body) else ""
-        is_html = bool(seq.is_html) if seq else False
-        variant_id = None
-        has_variants = False
+    # Historical content must never be reconstructed from mutable templates.
+    body = el.body if include_body and el.body is not None else ""
+    is_html = bool(el.is_html)
+    variant_id = el.variant_id
+    has_variants = variant_id is not None
     return {
         "type": "sent",
+        "body_available": el.body is not None,
         "log_id": el.id,
         "sent_at": _utc_iso(el.sent_at),
         "sent_date": el.sent_at.date().isoformat() if el.sent_at else None,
@@ -323,31 +317,14 @@ async def _resolve_scheduled_content(
     inbox: Inbox,
 ) -> dict:
     """Resolve content for a scheduled slot (reads variant_id from slot)."""
-    return await _resolve_content(
+    content = await _resolve_content(
         db, sequence, lead, campaign_lead, campaign, slot.variant_id
     )
-
-
-async def _resolve_sent_content(
-    db: AsyncSession,
-    email_log: EmailLog,
-    sequence: Sequence | None,
-    lead: Lead,
-    campaign_lead: CampaignLead | None,
-    campaign: Campaign,
-) -> dict:
-    """Resolve the effective body/is_html for a sent email.
-
-    The subject is taken from *email_log.subject* (already rendered at send
-    time).  The body is reconstructed from the sequence and the variant that
-    was actually sent (*email_log.variant_id*), with variable substitution.
-    """
-    resolved = await _resolve_content(
-        db, sequence, lead, campaign_lead, campaign, email_log.variant_id
-    )
-    # Override subject with the sent-time rendered value
-    resolved["subject"] = email_log.subject or resolved["subject"]
-    return resolved
+    if campaign.send_all_as_text or (campaign.send_first_as_text and slot.sequence_index == 0):
+        content["is_html"] = False
+    elif campaign.track_opens or campaign.track_clicks:
+        content["is_html"] = True
+    return content
 
 
 async def _assign_variants_to_slots(db: AsyncSession) -> None:
@@ -452,31 +429,8 @@ async def global_sent(
     result = await db.execute(query)
     rows = result.all()
 
-    # When include_body is requested, resolve content for all sent emails
-    resolved_map: dict[int, dict] = {}  # log_id -> resolved_content
-    if include_body:
-        # Pre-load sequence variants for all relevant sequences
-        seq_ids = {seq.id for _el, _lead, _camp, seq, _inbox, _cl in rows if seq is not None}
-        if seq_ids:
-            seqs_result = await db.execute(
-                select(Sequence)
-                .options(selectinload(Sequence.variants))
-                .where(Sequence.id.in_(seq_ids))
-            )
-            seqs_with_variants = {s.id: s for s in seqs_result.scalars().all()}
-            for row_idx in range(len(rows)):
-                el, lead, campaign, seq, inbox, cl = rows[row_idx]
-                if seq is not None and seq.id in seqs_with_variants:
-                    seq.variants = seqs_with_variants[seq.id].variants
-
-        for el, lead, campaign, seq, inbox, cl in rows:
-            resolved_map[el.id] = await _resolve_sent_content(
-                db, el, seq, lead, cl, campaign
-            )
-
     return [
-        _serialize_sent(el, lead, campaign, seq, inbox, cl, include_body, include_events,
-                        resolved_content=resolved_map.get(el.id))
+        _serialize_sent(el, lead, campaign, seq, inbox, cl, include_body, include_events)
         for el, lead, campaign, seq, inbox, cl in rows
     ]
 
@@ -554,7 +508,7 @@ async def global_scheduled(
 
 @router.get("/sent/{log_id}")
 async def sent_detail(log_id: int, db: AsyncSession = Depends(get_db)):
-    """Fetch a single sent email with full sequence body, variables rendered, and events."""
+    """Fetch captured sent content and events; older bodies may be unavailable."""
     SeqAlias = aliased(Sequence)
     InboxAlias = aliased(Inbox)
     ClAlias = aliased(CampaignLead)
@@ -563,7 +517,6 @@ async def sent_detail(log_id: int, db: AsyncSession = Depends(get_db)):
         .options(
             selectinload(EmailLog.opens),
             selectinload(EmailLog.clicks),
-            selectinload(SeqAlias.variants),
         )
         .join(Lead, EmailLog.lead_id == Lead.id)
         .join(Campaign, EmailLog.campaign_id == Campaign.id)
@@ -584,9 +537,7 @@ async def sent_detail(log_id: int, db: AsyncSession = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Sent email not found")
     el, lead, campaign, seq, inbox, cl = row
-    resolved = await _resolve_sent_content(db, el, seq, lead, cl, campaign)
-    return _serialize_sent(el, lead, campaign, seq, inbox, cl, include_body=True, include_events=True,
-                           resolved_content=resolved)
+    return _serialize_sent(el, lead, campaign, seq, inbox, cl, include_body=True, include_events=True)
 
 
 @router.get("/scheduled/{slot_id}")

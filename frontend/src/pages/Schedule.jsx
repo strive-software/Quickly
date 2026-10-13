@@ -1,3 +1,4 @@
+import EmailPreviewModal from '../components/EmailPreviewModal';
 import { useEffect, useState, useRef } from 'react';
 import { api, apiCache } from '../api';
 import { useLoading } from '../context/LoadingContext';
@@ -22,101 +23,6 @@ const SCHEDULE_LIMIT = 5000;
 function buildQuery(path, params) {
   const query = new URLSearchParams(params).toString();
   return query ? `${path}?${query}` : path;
-}
-
-// ── Email Preview Modal for schedule items ────────────────────────────────────
-function ScheduleEmailPreviewModal({ item, onClose }) {
-  const isHtml = item.sequence_is_html || (item.sequence_body || '').trim().startsWith('<');
-  const subject = item.subject || '(no subject)';
-  const body = item.sequence_body || '';
-  const backdropDown = useRef(false);
-
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onMouseDown={e => { backdropDown.current = e.target === e.currentTarget; }}
-      onClick={() => { if (backdropDown.current) onClose(); }}
-    >
-      <div
-        data-darkreader-ignore
-        className="rounded shadow w-full max-w-3xl max-h-[90vh] flex flex-col"
-        style={{ backgroundColor: 'white' }}
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <div>
-            <h2 className="font-semibold text-gray-800">Email Preview</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
-              {item.type === 'sent' ? `Sent to ${item.lead_email}` : `Scheduled for ${item.lead_email}`}
-            </p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
-        </div>
-
-        {/* Meta */}
-        <div className="px-6 py-3 border-b bg-gray-50 flex flex-wrap gap-x-6 gap-y-1 text-sm">
-          <span className="text-gray-500">
-            <span className="font-medium text-gray-700">Campaign:</span> {item.campaign_name}
-          </span>
-          <span className="text-gray-500">
-            <span className="font-medium text-gray-700">Sequence:</span> #{(item.sequence_index ?? 0) + 1}
-          </span>
-          {item.type === 'sent' && item.sent_at && (
-            <span className="text-gray-500">
-              <span className="font-medium text-gray-700">Sent:</span> {new Date(item.sent_at).toLocaleString()}
-            </span>
-          )}
-          {item.type === 'scheduled' && item.scheduled_at && (
-            <span className="text-gray-500">
-              <span className="font-medium text-gray-700">Scheduled:</span> {new Date(item.scheduled_at).toLocaleString()}
-            </span>
-          )}
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          {/* Subject */}
-          <div className="bg-gray-50 rounded-lg px-4 py-3">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1">Subject</span>
-            <p className="font-medium text-gray-800">
-              {!item.subject || item.subject === '(reply in thread)'
-                ? <em className="text-gray-400 font-normal">Reply in thread</em>
-                : item.subject}
-            </p>
-          </div>
-          {/* Body */}
-          <div>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-2">Body</span>
-            {body ? (
-              isHtml ? (
-                <div
-                  className="border rounded-lg p-5 bg-white prose prose-sm max-w-none"
-                  dangerouslySetInnerHTML={{ __html: body }}
-                />
-              ) : (
-                <pre className="border rounded-lg p-5 bg-gray-50 text-sm whitespace-pre-wrap font-sans text-gray-800">
-                  {body}
-                </pre>
-              )
-            ) : (
-              <p className="text-gray-400 italic text-sm">No body available</p>
-            )}
-          </div>
-        </div>
-
-        <div className="px-6 py-3 border-t flex justify-end">
-          <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function escapeHtml(s){
@@ -161,14 +67,13 @@ export default function Schedule() {
   const ensureDetail = async (item) => {
     try {
       if (item.type === 'scheduled') {
-        if (item.sequence_body) return item;
         const data = await api.get(`/schedule/scheduled/${item.slot_id}`);
         const merged = { ...item, ...data };
         setScheduled(prev => prev.map(s => s.slot_id === item.slot_id ? merged : s));
         return merged;
       }
       if (item.type === 'sent') {
-        if (item.sequence_body || (item.opens && item.clicks)) return item;
+        if (item.body_available !== undefined && item.opens && item.clicks) return item;
         const data = await api.get(`/schedule/sent/${item.log_id}`);
         const merged = { ...item, ...data };
         setSent(prev => prev.map(s => s.log_id === item.log_id ? merged : s));
@@ -658,7 +563,7 @@ export default function Schedule() {
 
       {/* Email preview modal */}
       {previewItem && (
-        <ScheduleEmailPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
+        <EmailPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
       )}
     </div>
   );

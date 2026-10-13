@@ -81,6 +81,8 @@ async def _run_migrations(conn) -> None:
         return
 
     pg_alters = [
+        "ALTER TABLE email_log ADD COLUMN IF NOT EXISTS body TEXT NULL",
+        "ALTER TABLE email_log ADD COLUMN IF NOT EXISTS is_html BOOLEAN NULL",
         # 2026-03-24: ramp-up starting number (default 1 preserves old behaviour)
         "ALTER TABLE inbox ADD COLUMN IF NOT EXISTS ramp_up_start INTEGER NOT NULL DEFAULT 1",
         # 2026-03-24: track when ramp-up was last enabled (NULL = use created_at as fallback)

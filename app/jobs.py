@@ -954,6 +954,8 @@ async def run_send_job():
                     continue
 
                 # ── success: update log and consume the slot ─────────────────
+                email_log_entry.body = send_body
+                email_log_entry.is_html = is_html
                 email_log_entry.message_id = result.message_id
                 email_log_entry.thread_id = result.thread_id or prev_thread_id
                 await session.delete(slot)
@@ -1742,6 +1744,8 @@ async def send_slot_job(slot_id: int) -> None:
             return
 
         # ── Success ───────────────────────────────────────────────────────
+        email_log_entry.body = send_body
+        email_log_entry.is_html = is_html
         email_log_entry.message_id = result.message_id
         email_log_entry.thread_id = result.thread_id or prev_thread_id
         await session.delete(slot)

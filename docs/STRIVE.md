@@ -58,3 +58,16 @@ npm run build
 npx playwright install --with-deps chromium
 npx playwright test
 ```
+
+## Queued and sent email previews
+
+Campaign Queue and Analytics → Sent Emails reuse the Schedule preview dialog.
+Queued content is resolved from current personalization and the assigned variant;
+send-time additions are identified in the preview. Sent bodies and format are
+captured after final composition in both successful sending paths. Subject uses
+the existing send-log field. Transport MIME normalization is not stored separately.
+
+Startup adds nullable `email_log.body` and `email_log.is_html` columns using
+idempotent PostgreSQL DDL. No historical backfill: NULL bodies explicitly display
+“Original body unavailable.” Template changes cannot rewrite captured sent content.
+HTML previews are sanitized and sandboxed with remote resource loading blocked.

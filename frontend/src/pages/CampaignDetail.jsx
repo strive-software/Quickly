@@ -1,3 +1,4 @@
+import EmailPreviewModal from '../components/EmailPreviewModal';
 import { useParams } from 'react-router-dom';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNotify } from '../context/NotificationContext';
@@ -47,6 +48,7 @@ export default function CampaignDetail() {
   const [leads, setLeads] = useState(() => apiCache.get(`/campaigns/${id}/leads`) || []);
   const [queueData, setQueueData] = useState(() => apiCache.get(`/campaigns/${id}/queue`) || []);
   const [sentData, setSentData] = useState(() => apiCache.get(`/campaigns/${id}/sent`) || []);
+  const [previewItem, setPreviewItem] = useState(null);
   const [queueFilter, setQueueFilter] = useState(null);
   const queueRef = useRef(null);
   const [pastExpanded, setPastExpanded] = useState(false);
@@ -111,6 +113,15 @@ export default function CampaignDetail() {
     return ib?.wait_minutes_between ?? 5;
   }, [campaign, inboxes]);
 
+  async function previewEmail(type, row) {
+    try {
+      const detail = await api.get(`/schedule/${type}/${type === 'sent' ? row.log_id : row.slot_id}`);
+      setPreviewItem({ ...row, ...detail, type });
+    } catch {
+      notify({ type: 'error', message: 'Failed to load email details' });
+    }
+  }
+
   /* ── queue helpers ── */
   function estimatedTime(positionInDay) {
     if (!campaign) return '';
@@ -156,7 +167,7 @@ export default function CampaignDetail() {
               <table className="w-full text-sm border-collapse mb-3">
                 <thead>
                   <tr className="bg-gray-50">
-                    {['Date','Time','From','Lead','Sequence','Subject'].map(h => (
+                    {['Date','Time','From','Lead','Sequence','Subject','Email'].map(h => (
                       <th key={h} className="px-3 py-2 text-left font-semibold text-gray-600">{h}</th>
                     ))}
                   </tr>
@@ -172,6 +183,7 @@ export default function CampaignDetail() {
                         <td className="px-3 py-1.5 font-mono">{s.lead_email}</td>
                         <td className="px-3 py-1.5">Seq {s.sequence_index+1}</td>
                         <td className="px-3 py-1.5">{s.subject||''}</td>
+                        <td className="px-3 py-1.5"><Button size="sm" variant="outline" onClick={e => { e.stopPropagation(); previewEmail('sent', s); }}>View email</Button></td>
                       </tr>
                     )))}
                 </tbody>
@@ -185,7 +197,7 @@ export default function CampaignDetail() {
             <table className="w-full text-sm border-collapse">
               <thead>
                 <tr className="bg-gray-50">
-                  {['Date','Est. time','#','From','Lead','Sequence'].map(h=>(
+                  {['Date','Est. time','#','From','Lead','Sequence','Email'].map(h=>(
                     <th key={h} className="px-3 py-2 text-left font-semibold text-gray-600">{h}</th>
                   ))}
                 </tr>
@@ -215,6 +227,7 @@ export default function CampaignDetail() {
                           <td className="px-3 py-1.5 font-mono text-xs max-w-[200px] truncate" title={q.inbox_email || ''}>{q.inbox_email || '—'}</td>
                           <td className="px-3 py-1.5 font-mono">{q.lead_email}</td>
                           <td className="px-3 py-1.5">Seq {q.sequence_index+1}</td>
+                          <td className="px-3 py-1.5"><Button size="sm" variant="outline" onClick={e => { e.stopPropagation(); previewEmail('scheduled', q); }}>Preview email</Button></td>
                         </tr>
                       );
                     }))}
@@ -312,6 +325,7 @@ export default function CampaignDetail() {
           campaign={campaign}
           sentData={sentData}
           sequences={sequences}
+          onPreview={row => previewEmail('sent', row)}
           onRefresh={loadAll}
         />
       )}
@@ -335,6 +349,8 @@ export default function CampaignDetail() {
           </div>
         </div>
       )}
+
+      {previewItem && <EmailPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />}
 
       {/* Settings tab */}
       {activeTab === 'settings' && (
@@ -1249,7 +1265,7 @@ const SERIES_LIST = [
   { key: 'uniqueClicks', name: 'Unique Clicks', stroke: 'rgba(236,72,153,0.8)',  fill: 'rgba(236,72,153,0.15)' },
 ];
 
-function CampaignAnalyticsTab({ campaignId, campaign, sentData = [], sequences = [], onRefresh }) {
+function CampaignAnalyticsTab({ campaignId, campaign, sentData = [], sequences = [], onRefresh, onPreview }) {
   const notify = useNotify();
   const today = new Date();
   const localIso = (dt) => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
@@ -1555,6 +1571,7 @@ function CampaignAnalyticsTab({ campaignId, campaign, sentData = [], sequences =
               sentData={sentData}
               filter={sentFilter}
               onFilterChange={setSentFilter}
+              onPreview={onPreview}
             />
           )}
         </div>
@@ -1693,7 +1710,7 @@ const SENT_FILTER_OPTIONS = [
   { value: 'unsubscribed', label: 'Unsubscribed' },
 ];
 
-function SentEmailsPanel({ sentData = [], filter, onFilterChange }) {
+function SentEmailsPanel({ sentData = [], filter, onFilterChange, onPreview }) {
   const filtered = useMemo(() => {
     switch (filter) {
       case 'opened':      return sentData.filter(e => e.opened);
@@ -1751,6 +1768,7 @@ function SentEmailsPanel({ sentData = [], filter, onFilterChange }) {
                 <th className="px-3 py-2.5 text-center">Replied</th>
                 <th className="px-3 py-2.5 text-left">Variant</th>
                 <th className="px-3 py-2.5 text-left">Status</th>
+                <th className="px-3 py-2.5 text-left">Email</th>
               </tr>
             </thead>
             <tbody>
@@ -1791,6 +1809,7 @@ function SentEmailsPanel({ sentData = [], filter, onFilterChange }) {
                       )}
                     </div>
                   </td>
+                  <td className="px-3 py-2"><Button size="sm" variant="outline" onClick={() => onPreview(e)}>View email</Button></td>
                 </tr>
               ))}
             </tbody>

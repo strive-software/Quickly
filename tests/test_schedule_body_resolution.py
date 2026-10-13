@@ -15,7 +15,6 @@ from app.models import (
 from app.routers.schedule import (
     _resolve_content,
     _resolve_scheduled_content,
-    _resolve_sent_content,
     _serialize_scheduled,
     _serialize_sent,
     _assign_variants_to_slots,
@@ -350,8 +349,8 @@ async def test_serialize_scheduled_include_body_false(session):
 # ── Tests: _serialize_sent ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_serialize_sent_with_resolved_content(session):
-    """_serialize_sent should use resolved content for body when provided."""
+async def test_serialize_sent_with_captured_content(session):
+    """_serialize_sent should use the captured body and format."""
     inbox = await make_inbox(session)
     campaign = await make_campaign(session)
     lead = await make_lead(session, name="SentUser")
@@ -361,26 +360,21 @@ async def test_serialize_sent_with_resolved_content(session):
                                      inbox_id=inbox.id,
                                      subject="Already rendered subject")
 
-    resolved = {
-        "subject": "Already rendered subject",
-        "body": "<p>Reconstructed body for SentUser</p>",
-        "is_html": True,
-        "variant_id": 7,
-        "has_variants": True,
-    }
+    email_log.body = "<p>Captured body for SentUser</p>"
+    email_log.is_html = True
+    email_log.variant_id = 7
     result = _serialize_sent(email_log, lead, campaign, seq, inbox, cl,
-                             include_body=True, include_events=False,
-                             resolved_content=resolved)
+                             include_body=True, include_events=False)
     assert result["type"] == "sent"
-    assert result["sequence_body"] == "<p>Reconstructed body for SentUser</p>"
+    assert result["sequence_body"] == "<p>Captured body for SentUser</p>"
     assert result["subject"] == "Already rendered subject"
     assert result["variant_id"] == 7
     assert result["has_variants"] is True
 
 
 @pytest.mark.asyncio
-async def test_serialize_sent_without_resolved(session):
-    """_serialize_sent without resolved_content uses raw seq.body."""
+async def test_serialize_sent_without_snapshot(session):
+    """Historical body is unavailable, regardless of the current sequence."""
     inbox = await make_inbox(session)
     campaign = await make_campaign(session)
     lead = await make_lead(session, name="Test")
@@ -391,9 +385,9 @@ async def test_serialize_sent_without_resolved(session):
                                      subject="Logged Subject")
 
     result = _serialize_sent(email_log, lead, campaign, seq, inbox, None,
-                             include_body=True, include_events=False,
-                             resolved_content=None)
-    assert result["sequence_body"] == "Raw seq body"
+                             include_body=True, include_events=False)
+    assert result["sequence_body"] == ""
+    assert result["body_available"] is False
     assert result["subject"] == "Logged Subject"
 
 
@@ -417,50 +411,6 @@ async def test_resolve_scheduled_content_passes_variant_id(session):
     result = await _resolve_scheduled_content(session, slot, seq, lead, cl,
                                               campaign, inbox)
     assert "Variant" in result["body"]
-    assert result["variant_id"] == var.id
-
-
-# ── Tests: _resolve_sent_content (wrapper) ──────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_resolve_sent_content_uses_log_subject(session):
-    """_resolve_sent_content overrides resolved subject with el.subject."""
-    inbox = await make_inbox(session)
-    campaign = await make_campaign(session)
-    lead = await make_lead(session, name="SentUser")
-    cl = await make_campaign_lead(session, campaign.id, lead.id)
-    seq = await make_sequence(session, campaign.id,
-                              subject="Template {{name}}",
-                              body="<p>Body {{name}}</p>")
-    email_log = await make_email_log(session, lead.id, campaign.id,
-                                     inbox_id=inbox.id,
-                                     subject="Final Sent Subject")
-
-    result = await _resolve_sent_content(session, email_log, seq, lead, cl,
-                                         campaign)
-    assert result["subject"] == "Final Sent Subject"
-    assert "Body SentUser" in result["body"]
-
-
-@pytest.mark.asyncio
-async def test_resolve_sent_content_uses_variant_id(session):
-    """_resolve_sent_content uses email_log.variant_id."""
-    inbox = await make_inbox(session)
-    campaign = await make_campaign(session)
-    lead = await make_lead(session, name="VariantUser")
-    seq = await make_sequence(session, campaign.id, subject="Default",
-                              body="<p>Default</p>")
-    var = await make_variant(session, seq.id, body="<p>Variant {{name}}</p>")
-    seq = await reload_seq_with_variants(session, seq)
-    email_log = await make_email_log(session, lead.id, campaign.id,
-                                     inbox_id=inbox.id,
-                                     subject="Sent Subj")
-    email_log.variant_id = var.id
-    await session.flush()
-
-    result = await _resolve_sent_content(session, email_log, seq, lead, None,
-                                         campaign)
-    assert "Variant VariantUser" in result["body"]
     assert result["variant_id"] == var.id
 
 

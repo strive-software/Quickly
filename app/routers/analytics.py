@@ -96,7 +96,7 @@ async def daily_analytics(
         .where(
             LeadReply.replied_at >= start,
             LeadReply.replied_at < end,
-            CampaignLead.interest_status.notin_(["out_of_office", "auto_reply"]),
+            func.coalesce(CampaignLead.interest_status, "").notin_(["out_of_office", "auto_reply"]),
         )
         .group_by(cast(LeadReply.replied_at, Date), LeadReply.campaign_id)
     )

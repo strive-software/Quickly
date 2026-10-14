@@ -140,15 +140,9 @@ async def _alert_repeated_send_failure(
 
 
 async def _update_enrollment_after_send(session: AsyncSession, cl: CampaignLead, campaign: Campaign, sequence: Sequence) -> None:
-    n_seq = (
-        await session.execute(
-            select(func.count(Sequence.id)).where(Sequence.campaign_id == campaign.id)
-        )
-    ).scalar() or 0
-    if getattr(cl, "enrollment_status", None) == "active":
-        cl.enrollment_status = "contacted"
-    if n_seq > 0 and sequence.position >= n_seq - 1:
-        cl.enrollment_status = "completed"
+    from app.queue_logic import refresh_manual_enrollment
+    await session.flush()
+    await refresh_manual_enrollment(session, cl)
 
 # Updated each time run_send_job finishes (for /api/status)
 last_send_job_run: datetime | None = None
@@ -365,6 +359,16 @@ async def run_send_job():
             last_sent_time = last_sent_res.scalar_one_or_none()
 
             for slot, cl, campaign, lead, sequence in rows:
+                # Manual progression edits invalidate future slots synchronously.
+                # This batch may have loaded a slot before that transaction committed.
+                if not await session.scalar(select(QueueSlot.id).where(QueueSlot.id == slot.id)):
+                    continue
+                from app.queue_logic import email_step_allowed
+                if not await email_step_allowed(session, cl, sequence):
+                    await session.delete(slot)
+                    await session.commit()
+                    continue
+
                 # HARD LIMIT: daily quota
                 if sent_this_inbox >= quota_remaining:
                     await fire_webhook_event(
@@ -1157,6 +1161,12 @@ async def send_slot_job(slot_id: int) -> None:
             return
 
         slot, cl, campaign, lead, sequence, inbox = row
+        from app.queue_logic import email_step_allowed
+        if not await email_step_allowed(session, cl, sequence):
+            await session.delete(slot)
+            await session.commit()
+            return
+
 
         # ── Pre-flight checks ────────────────────────────────────────────
         if inbox.paused:

@@ -271,21 +271,32 @@ If Quickly is saving you money or replacing a paid tool in your workflow, a ⭐ 
 
 ### Lead profiles and LLM outreach context
 
-Lead details include priority (`low`, `normal`, `high`), job title, role description,
-Apollo ID, notes, and a dedicated LinkedIn fieldset. These are available through
+Lead details include priority (`low`, `normal`, `high`), job title, company, role description,
+Apollo ID, notes, and a LinkedIn profile URL. These are available through
 `GET /api/leads/{id}` and `PATCH /api/leads/{id}` as well as the generated MCP tools.
 
-Each lead has up to three optional LinkedIn messages. Update a single slot with
-`PATCH /api/leads/{id}/linkedin/{position}` (positions 1–3): `message`, `sent`, and
-`sent_at`. Marking sent sets the timestamp; unmarking clears it. An explicit
-ISO timestamp with a timezone records a historical manual send. These operations
-only maintain records; they do not send LinkedIn messages.
+LinkedIn messages are **manual campaign sequence steps** (`sequence_type: linkedin`).
+Add a step in the campaign sequence editor and choose **Hold** (wait for Done or
+an explicit per-lead Ignore) or **Ignore** (continue regardless of Pending/Done).
+Each campaign enrollment has its own message, Pending/Done status and sent date.
+Marking Done records a manual send; Quickly never sends to LinkedIn. Ignoring a
+step does not mark it sent. Undoing Done cannot recall already sent emails or reactivate a Completed enrollment.
 
-`GET /api/leads?linkedin_pending=true` selects high-priority leads with a tracked
-email send and an unsent nonempty draft, excluding LinkedIn pauses/replies,
-tracked email replies, and suppressed lead statuses. `priority`, `has_sent_email`,
-and `apollo_id` can also be filtered separately. Manual emails must first be
-recorded in Quickly's email history to count as sent.
+`GET /api/campaigns/{campaign_id}/manual-steps` lists this work. Filter with
+`ready_only=true`, `priority=high`, and `has_sent_email=true` for high-priority
+pending work after an email in this campaign, including Ignore-mode work. Paused, replied and suppressed
+leads are excluded from ready work. Delays use campaign sending days/timezone.
+`PATCH /api/campaigns/{campaign_id}/leads/{lead_id}/manual-steps/{sequence_id}`
+accepts `message`, `sent`, timezone-aware `sent_at`, and independent `ignored`.
+Sequence create/update accepts `manual_mode: hold|ignore`. These routes and
+fields are exposed by the production OpenAPI-generated MCP.
+
+Existing lead-level LinkedIn data is archived, then moved for leads with exactly
+one enrollment into appended **Ignore** steps, preserving drafts and sent dates
+without changing existing email positions/timing. Ambiguous/unassigned records
+remain in `legacy_linkedin_archive` for explicit assignment. Lead-level messaging
+fields/routes are removed; the lead's LinkedIn profile URL remains. A rollback
+to the prior app requires restoring the removed columns from the archive.
 
 Global **LLM Company Voice** is under Settings → General (`GET/PUT
 /api/settings/llm-voice`, field `company_voice`). **Sequence LLM Voice** is under
@@ -294,6 +305,10 @@ whole sequence. LLM clients should read both rulesets when drafting; storing rul
 does not automatically regenerate existing content.
 
 CSV import/export uses `lead_`-prefixed columns for dedicated profile fields
-(e.g. `lead_job_title`, `lead_apollo_id`, `lead_linkedin_messages`). Message slots
-use a JSON array. Unprefixed columns such as `job_title` remain custom template
+(e.g. `lead_job_title`, `lead_apollo_id`). Manual step records are accessed
+through the campaign API. Unprefixed columns such as `job_title` remain custom template
 fields; dedicated profile fields do not automatically become template variables.
+
+Local migration verification: against an empty disposable PostgreSQL database,
+run `PYTHONPATH=. TEST_DATABASE_URL=postgresql+asyncpg://... python tests/check_manual_migration.py`.
+Browser verification remains local: `cd frontend && npm run build && npx playwright test`.

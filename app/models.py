@@ -135,14 +135,12 @@ class Inbox(Base):
 
 class Lead(Base):
     priority = Column(String(16), nullable=False, default="normal", server_default="normal")
+    company = Column(String(255), nullable=False, default="", server_default="")
     job_title = Column(String(255), nullable=False, default="", server_default="")
     role_description = Column(Text, nullable=False, default="", server_default="")
     apollo_id = Column(String(255), nullable=False, default="", server_default="")
     notes = Column(Text, nullable=False, default="", server_default="")
     linkedin_url = Column(String(2048), nullable=False, default="", server_default="")
-    linkedin_paused = Column(Boolean, nullable=False, default=False, server_default="false")
-    linkedin_replied_at = Column(DateTime(timezone=True), nullable=True)
-    linkedin_messages = Column(JSON, nullable=False, default=list, server_default="[]")
     __tablename__ = "lead"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), nullable=False, index=True)
@@ -242,7 +240,8 @@ class Sequence(Base):
     # Optional preheader/preview text injected as hidden div when is_html is True.
     preview_text = Column(String(512), nullable=True, default=None)
     wait_days_after_previous = Column(Integer, default=0)  # days after previous sequence
-    sequence_type = Column(String(32), default="standard", nullable=False)  # standard | personalized
+    manual_mode = Column(String(16), nullable=False, default="hold", server_default="hold")
+    sequence_type = Column(String(32), default="standard", nullable=False)  # standard | personalized | linkedin
     fallback_subject = Column(String(512), nullable=True, default=None)  # fallback for personalized sequences
     fallback_body = Column(Text, nullable=True, default=None)  # fallback for personalized sequences
     campaign = relationship("Campaign", back_populates="sequences")
@@ -300,6 +299,18 @@ class CampaignLead(Base):
     lead = relationship("Lead", back_populates="campaign_leads")
     queue_slots = relationship("QueueSlot", back_populates="campaign_lead", cascade="all, delete-orphan", order_by="QueueSlot.sequence_index")
     custom_email_overrides = relationship("CustomEmailOverride", back_populates="campaign_lead", cascade="all, delete-orphan")
+
+
+class ManualStepRecord(Base):
+    """Manual LinkedIn content and send history for one campaign enrollment."""
+    __tablename__ = "manual_step_record"
+    __table_args__ = (UniqueConstraint("campaign_lead_id", "sequence_id", name="uq_manual_step_enrollment"),)
+    id = Column(Integer, primary_key=True)
+    campaign_lead_id = Column(Integer, ForeignKey("campaign_lead.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence_id = Column(Integer, ForeignKey("sequence.id", ondelete="CASCADE"), nullable=False, index=True)
+    message = Column(Text, nullable=False, default="", server_default="")
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    ignored = Column(Boolean, nullable=False, default=False, server_default="false")
 
 
 class CustomEmailOverride(Base):

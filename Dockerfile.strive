@@ -33,4 +33,5 @@ ENV TEST_DATABASE_URL=sqlite+aiosqlite:///:memory: TEST_MODE=true
 RUN python -m pytest tests/test_personalized_editor.py tests/test_custom_sequence_mode_e2e.py tests/test_gmail_oauth.py tests/test_strive_jwt.py tests/test_email_content_preview.py tests/test_schedule_body_resolution.py -q && touch /tmp/tests-passed
 
 FROM backend AS runtime
+LABEL us.strive.quickly.schema="manual-linkedin-v1"
 COPY --from=test /tmp/tests-passed /app/tests-passed

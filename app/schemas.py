@@ -32,22 +32,33 @@ class LeadCampaignInfo(BaseModel):
 
 class LeadProfile(BaseModel):
     priority: Literal["low", "normal", "high"] = "normal"
+    company: str = Field(default="", max_length=255)
     job_title: str = Field(default="", max_length=255)
     role_description: str = Field(default="", max_length=20000)
     apollo_id: str = Field(default="", max_length=255)
     notes: str = Field(default="", max_length=50000)
     linkedin_url: str = Field(default="", max_length=2048, pattern=r"^(https://([a-zA-Z0-9-]+\.)?linkedin\.com/[^\s]*|)$")
-    linkedin_paused: bool = False
-    linkedin_replied_at: Optional[AwareDatetime] = None
 
 
-class LinkedInMessage(BaseModel):
+class ManualStepResponse(BaseModel):
+    campaign_lead_id: int
+    lead_id: int
+    name: str
+    email: str
+    priority: str
+    linkedin_url: str
+    sequence_id: int
+    position: int
+    mode: Literal["hold", "ignore"]
+    ready: bool
+    ignored: bool = False
     message: str = Field(default="", max_length=10000)
     sent: bool = False
     sent_at: Optional[AwareDatetime] = None
 
 
-class LinkedInMessagePatch(BaseModel):
+class ManualStepPatch(BaseModel):
+    ignored: Optional[bool] = None
     message: Optional[str] = Field(default=None, max_length=10000)
     sent: Optional[bool] = None
     sent_at: Optional[AwareDatetime] = None
@@ -80,7 +91,6 @@ class LeadRecoverRequest(BaseModel):
 
 
 class LeadResponse(LeadProfile):
-    linkedin_messages: List[LinkedInMessage] = Field(default_factory=list, max_length=3)
     last_email_sent_at: Optional[datetime] = None
     id: int
     email: str
@@ -260,7 +270,8 @@ class SequenceCreate(BaseModel):
     wait_days_after_previous: int = 0
     is_html: Optional[bool] = None  # None = auto-detect (legacy), True = HTML, False = plain
     preview_text: Optional[str] = None
-    sequence_type: str = "standard"  # standard | personalized
+    sequence_type: Literal["standard", "personalized", "linkedin"] = "standard"
+    manual_mode: Literal["hold", "ignore"] = "hold"
     fallback_subject: Optional[str] = None
     fallback_body: Optional[str] = None
 
@@ -271,7 +282,8 @@ class SequenceUpdate(BaseModel):
     wait_days_after_previous: Optional[int] = None
     is_html: Optional[bool] = None
     preview_text: Optional[str] = None
-    sequence_type: Optional[str] = None
+    sequence_type: Optional[Literal["standard", "personalized", "linkedin"]] = None
+    manual_mode: Optional[Literal["hold", "ignore"]] = None
     fallback_subject: Optional[str] = None
     fallback_body: Optional[str] = None
 
@@ -286,6 +298,7 @@ class SequenceResponse(BaseModel):
     is_html: Optional[bool] = None
     preview_text: Optional[str] = None
     sequence_type: str = "standard"
+    manual_mode: Literal["hold", "ignore"] = "hold"
     fallback_subject: Optional[str] = None
     fallback_body: Optional[str] = None
     variants: List["SequenceVariantResponse"] = []

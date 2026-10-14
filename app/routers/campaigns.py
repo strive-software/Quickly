@@ -31,6 +31,7 @@ from app.models import (
     CampaignInbox,
     LeadReply,
     CustomEmailOverride,
+    ManualStepRecord,
 )
 from app.campaign_lead_status import (
     ENROLLMENT_STATUSES,
@@ -42,7 +43,6 @@ from app.campaign_lead_status import (
 )
 from app.schemas import (
     LeadProfile,
-    LinkedInMessage,
     CampaignCreate,
     CampaignUpdate,
     CampaignResponse,
@@ -666,6 +666,7 @@ async def duplicate_campaign(campaign_id: int, db: AsyncSession = Depends(get_db
             is_html=seq.is_html,
             preview_text=seq.preview_text,
             sequence_type=getattr(seq, "sequence_type", "standard"),
+            manual_mode=seq.manual_mode,
             fallback_subject=getattr(seq, "fallback_subject", None),
             fallback_body=getattr(seq, "fallback_body", None),
         )
@@ -690,6 +691,26 @@ async def list_sequences(campaign_id: int, db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
+async def _refresh_manual_campaign(db, campaign_id, position=None):
+    from app.queue_logic import manual_step_resolved
+    if position is not None:
+        await db.execute(delete(QueueSlot).where(QueueSlot.campaign_lead_id.in_(
+            select(CampaignLead.id).where(CampaignLead.campaign_id == campaign_id)),
+            QueueSlot.sequence_index >= position))
+    steps = list((await db.scalars(select(Sequence).where(Sequence.campaign_id == campaign_id))).all())
+    sent = dict((await db.execute(select(EmailLog.lead_id,func.max(EmailLog.sequence_index)).where(
+        EmailLog.campaign_id == campaign_id).group_by(EmailLog.lead_id))).all())
+    records = {(r.campaign_lead_id,r.sequence_id):r for r in (await db.scalars(
+        select(ManualStepRecord).join(CampaignLead).where(CampaignLead.campaign_id == campaign_id))).all()}
+    enrollments = await db.scalars(select(CampaignLead).where(CampaignLead.campaign_id == campaign_id,
+        CampaignLead.enrollment_status.in_(["active","contacted"])))
+    for enrollment in enrollments.all():
+        last = sent.get(enrollment.lead_id,-1)
+        done = bool(steps) and all(manual_step_resolved(step,records.get((enrollment.id,step.id)))
+            if step.sequence_type == "linkedin" else step.position <= last for step in steps)
+        enrollment.enrollment_status = "completed" if done else ("contacted" if last >= 0 else "active")
+
+
 @router.post("/{campaign_id}/sequences", response_model=SequenceResponse)
 async def create_sequence(
     campaign_id: int,
@@ -701,6 +722,11 @@ async def create_sequence(
     result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
     if not result.scalar_one_or_none():
         raise HTTPException(404, "Campaign not found")
+    if data.position < 0 or await db.scalar(select(Sequence.id).where(
+        Sequence.campaign_id == campaign_id, Sequence.position == data.position)):
+        raise HTTPException(422, "Sequence position must be nonnegative and unused")
+    if data.sequence_type == "linkedin" and len(data.body) > 10000:
+        raise HTTPException(422, "LinkedIn draft must be at most 10000 characters")
     seq = Sequence(
         campaign_id=campaign_id,
         position=data.position,
@@ -709,7 +735,8 @@ async def create_sequence(
         wait_days_after_previous=data.wait_days_after_previous,
         is_html=data.is_html,
         preview_text=data.preview_text,
-        sequence_type=getattr(data, "sequence_type", "standard"),
+        sequence_type=data.sequence_type,
+        manual_mode=data.manual_mode,
         fallback_subject=data.fallback_subject,
         fallback_body=data.fallback_body,
     )
@@ -719,6 +746,8 @@ async def create_sequence(
     # If this is a personalized sequence, reconcile existing leads' statuses
     if getattr(seq, "sequence_type", "standard") == "personalized":
         await reconcile_personalized_status(db, campaign_id, background_tasks)
+    if seq.sequence_type == "linkedin":
+        await _refresh_manual_campaign(db, campaign_id, seq.position)
     # Recalculate queue so already-enrolled leads get slots for the new sequence
     cl_res = await db.execute(select(CampaignLead.id).where(CampaignLead.campaign_id == campaign_id))
     cl_ids = [r[0] for r in cl_res.all()]
@@ -752,6 +781,18 @@ async def update_sequence(
     seq = result.scalar_one_or_none()
     if not seq:
         raise HTTPException(404, "Sequence not found")
+    was_manual = seq.sequence_type == "linkedin"
+    progression_changed = any(getattr(data,key) is not None and getattr(data,key) != getattr(seq,key)
+        for key in ("manual_mode","sequence_type","wait_days_after_previous"))
+    if data.sequence_type is not None and data.sequence_type != seq.sequence_type and (
+        was_manual or data.sequence_type == "linkedin"):
+        raise HTTPException(409, "Create a new step to switch between email and manual LinkedIn")
+    if data.sequence_type is not None and data.sequence_type != seq.sequence_type:
+        sent = await db.scalar(select(EmailLog.id).where(EmailLog.campaign_id == campaign_id,
+            EmailLog.sequence_index == seq.position).limit(1))
+        manual = await db.scalar(select(ManualStepRecord.id).where(ManualStepRecord.sequence_id == seq.id).limit(1))
+        if sent or manual:
+            raise HTTPException(409, "A step with sent history or manual records cannot change type")
     if data.subject is not None:
         seq.subject = data.subject
     if data.body is not None:
@@ -769,9 +810,16 @@ async def update_sequence(
         seq.fallback_subject = data.fallback_subject
     if data.fallback_body is not None:
         seq.fallback_body = data.fallback_body
+    if data.manual_mode is not None:
+        seq.manual_mode = data.manual_mode
+    if seq.sequence_type == "linkedin" and len(seq.body) > 10000:
+        raise HTTPException(422, "LinkedIn draft must be at most 10000 characters")
     if data.wait_days_after_previous is not None:
         seq.wait_days_after_previous = data.wait_days_after_previous
+    if progression_changed:
         await db.flush()
+        if was_manual or seq.sequence_type == "linkedin":
+            await _refresh_manual_campaign(db, campaign_id, seq.position)
         cl_res = await db.execute(select(CampaignLead.id).where(CampaignLead.campaign_id == campaign_id))
         cl_ids = [r[0] for r in cl_res.all()]
         if cl_ids:
@@ -804,6 +852,11 @@ async def delete_sequence(
     seq = result.scalar_one_or_none()
     if not seq:
         raise HTTPException(404, "Sequence not found")
+    # Sent history uses positions; renumbering it would associate sends with another step.
+    if await db.scalar(select(EmailLog.id).where(EmailLog.campaign_id == campaign_id,
+        EmailLog.sequence_index >= seq.position).limit(1)):
+        raise HTTPException(409, "Cannot delete a step at or before sent email history; use Ignore for manual steps")
+    was_manual = seq.sequence_type == "linkedin"
     deleted_position = seq.position
     was_personalized = getattr(seq, "sequence_type", "standard") == "personalized"
     await db.delete(seq)
@@ -817,6 +870,8 @@ async def delete_sequence(
     for s in remaining.scalars().all():
         s.position -= 1
     await db.flush()
+    if was_manual:
+        await _refresh_manual_campaign(db, campaign_id, deleted_position)
     # If we deleted a personalized sequence, reconcile leads' statuses
     if was_personalized:
         await reconcile_personalized_status(db, campaign_id, background_tasks)
@@ -1026,10 +1081,10 @@ async def list_campaign_leads(campaign_id: int, db: AsyncSession = Depends(get_d
         )
         replied_set = {r[0] for r in replied_result.all()}
 
-    seq_count_result = await db.execute(
-        select(func.count(Sequence.id)).where(Sequence.campaign_id == campaign_id)
-    )
-    total_sequences = seq_count_result.scalar() or 0
+    all_sequences = list((await db.scalars(select(Sequence).where(
+        Sequence.campaign_id == campaign_id).order_by(Sequence.position))).all())
+    manual_records = {(r.campaign_lead_id,r.sequence_id):r for r in (await db.scalars(
+        select(ManualStepRecord).join(CampaignLead).where(CampaignLead.campaign_id == campaign_id))).all()}
 
     # Personalized sequence info
     personalized_seq_result = await db.execute(
@@ -1074,14 +1129,14 @@ async def list_campaign_leads(campaign_id: int, db: AsyncSession = Depends(get_d
     inbox_by_lead = await from_inbox_email_by_lead_campaign(db, inbox_pairs)
     interactions_map = await _fetch_lead_interactions_batch(db, lead_ids) if lead_ids else {}
 
-    def stage_label(lead_id: int) -> str:
-        last_index = last_sent_map.get(lead_id, -1)
-        if total_sequences == 0:
-            return "—"
-        next_step = last_index + 1
-        if next_step >= total_sequences:
-            return "Complete"
-        return f"Step {next_step + 1}"
+    def stage_label(cl) -> str:
+        from app.queue_logic import manual_step_resolved
+        for step in all_sequences:
+            done = (manual_step_resolved(step,manual_records.get((cl.id,step.id)))
+                    if step.sequence_type == "linkedin" else step.position <= last_sent_map.get(cl.lead_id,-1))
+            if not done:
+                return f"Step {step.position + 1}" + (" · LinkedIn" if step.sequence_type == "linkedin" else "")
+        return "Complete" if all_sequences else "—"
 
     def custom_email_status_for_cl(cl_id: int, lead_id: int, enrollment_status: str | None) -> dict:
         if not personalized_sequences:
@@ -1127,7 +1182,7 @@ async def list_campaign_leads(campaign_id: int, db: AsyncSession = Depends(get_d
             "interest": cl.interest_status,
             "custom_data": lead.custom_data or {},
             "enrolled_at": cl.enrolled_at.isoformat(),
-            "stage": stage_label(lead.id),
+            "stage": stage_label(cl),
             "opened": lead.id in opened_set,
             "clicked": lead.id in clicked_set,
             "replied": lead.id in replied_set,
@@ -1640,6 +1695,8 @@ async def send_test_email(
     seq = seq_result.scalar_one_or_none()
     if not seq:
         raise HTTPException(404, "Sequence not found")
+    if seq.sequence_type == "linkedin":
+        raise HTTPException(400, "Manual LinkedIn steps cannot be sent as email")
 
     camp_result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
     campaign = camp_result.scalar_one_or_none()
@@ -2740,7 +2797,7 @@ async def import_campaign_leads(
         }
 
     _csv_reserved_lower = frozenset(
-        {"email", "name", "status", "interest", "email_verification_status", "lead_linkedin_messages"} | {f"lead_{key}" for key in LeadProfile.model_fields}
+        {"email", "name", "status", "interest", "email_verification_status"} | {f"lead_{key}" for key in LeadProfile.model_fields}
     )
 
     added = 0
@@ -2799,14 +2856,6 @@ async def import_campaign_leads(
         try:
             profile = LeadProfile(**{key: _csv_cell(f"lead_{key}") for key in LeadProfile.model_fields
                                      if _csv_cell(f"lead_{key}") is not None})
-            messages = None
-            if _csv_cell("lead_linkedin_messages"):
-                raw_messages = json.loads(_csv_cell("lead_linkedin_messages"))
-                if not isinstance(raw_messages, list) or len(raw_messages) > 3:
-                    raise ValueError("LinkedIn messages must be an array of up to three messages")
-                messages = [LinkedInMessage(**m).model_dump(mode="json") for m in raw_messages]
-                if any(bool(m["sent_at"]) != m["sent"] or (m["sent"] and not m["message"].strip()) for m in messages):
-                    raise ValueError("LinkedIn sent messages require text and sent_at")
             lead_result = await db.execute(select(Lead).where(Lead.email == email))
             lead = lead_result.scalar_one_or_none()
             if not lead:
@@ -2828,8 +2877,6 @@ async def import_campaign_leads(
 
             for key, value in profile.model_dump(exclude_unset=True).items():
                 setattr(lead, key, value)
-            if messages is not None:
-                lead.linkedin_messages = messages
             await db.flush()
 
             if skip_duplicates:
@@ -2987,3 +3034,7 @@ async def detect_campaign_lead_providers(
         asyncio.create_task(_detect_providers_background(pairs))
 
     return {"ok": True, "queued": len(pairs)}
+
+# Included here so the existing campaign authentication applies to manual work too.
+from app.routers.manual_steps import router as manual_steps_router
+router.include_router(manual_steps_router)

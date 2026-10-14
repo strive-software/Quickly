@@ -1,7 +1,7 @@
 """Queue slot reservation and recalculation logic."""
 import logging
 import random
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from app import time as time_provider
 from typing import List, Optional, Tuple
 from sqlalchemy import select, func, delete
@@ -12,9 +12,50 @@ except ImportError:
     ZoneInfo = None  # type: ignore[assignment,misc]  # Python < 3.9 fallback
 
 from app.campaign_lead_status import campaign_lead_schedule_eligibility_clause
-from app.models import Campaign, Sequence, CampaignLead, QueueSlot, Inbox, EmailLog, CampaignInbox, Lead
+from app.models import Campaign, Sequence, CampaignLead, QueueSlot, Inbox, EmailLog, CampaignInbox, Lead, ManualStepRecord
 
 log = logging.getLogger("quickly.queue")
+
+
+async def manual_records(session, campaign_lead_id):
+    rows = await session.execute(select(ManualStepRecord).where(
+        ManualStepRecord.campaign_lead_id == campaign_lead_id))
+    return {record.sequence_id: record for record in rows.scalars()}
+
+
+def manual_step_resolved(sequence, record):
+    return (getattr(sequence, "manual_mode", "hold") == "ignore"
+            or (record is not None and (record.sent_at is not None or record.ignored)))
+
+
+async def email_step_allowed(session, cl, sequence):
+    """Fail closed for stale manual slots or email slots beyond an unresolved hold."""
+    if sequence.sequence_type == "linkedin":
+        return False
+    rows = await session.execute(select(Sequence).where(
+        Sequence.campaign_id == cl.campaign_id,
+        Sequence.position < sequence.position, Sequence.sequence_type == "linkedin"))
+    previous = rows.scalars().all()
+    if not previous:
+        return True
+    records = await manual_records(session, cl.id)
+    return all(manual_step_resolved(step, records.get(step.id)) for step in previous)
+
+
+async def refresh_manual_enrollment(session, cl):
+    """Promote completion without resuming terminal or explicitly stopped enrollments."""
+    if cl.enrollment_status not in ("active", "contacted"):
+        return
+    steps = (await session.execute(select(Sequence).where(
+        Sequence.campaign_id == cl.campaign_id))).scalars().all()
+    sent = set((await session.execute(select(EmailLog.sequence_index).where(
+        EmailLog.campaign_id == cl.campaign_id, EmailLog.lead_id == cl.lead_id))).scalars())
+    records = await manual_records(session, cl.id)
+    last_sent = max(sent, default=-1)
+    done = bool(steps) and all(
+        manual_step_resolved(step, records.get(step.id)) if step.sequence_type == "linkedin"
+        else step.position <= last_sent for step in steps)
+    cl.enrollment_status = "completed" if done else ("contacted" if sent else "active")
 
 
 def compute_effective_daily_limit(inbox, for_date: Optional[date] = None) -> int:
@@ -387,9 +428,9 @@ async def _check_all_sequences_fit(
     Returns False if any sequence would overflow capacity.
     """
     to_schedule = [
-        (i, seq)
-        for i, seq in enumerate(sequences)
-        if i > last_sent_sequence_index
+        (seq.position, seq)
+        for seq in sequences
+        if seq.position > last_sent_sequence_index
     ]
     
     if not to_schedule:
@@ -399,7 +440,7 @@ async def _check_all_sequences_fit(
     simulated_loads = {}
     simulated_dates = []
     for idx, seq in to_schedule:
-        is_follow_up = (idx > 0)
+        is_follow_up = bool(simulated_dates) or last_sent_sequence_index >= 0
         
         if is_follow_up and simulated_dates:
             # Follow-up: calculate based on previous sequence's date
@@ -477,10 +518,19 @@ async def reserve_slots_for_lead(
         log.warning("reserve_slots_for_lead: no sequences for campaign %s", campaign.id)
         return
 
+    records = await manual_records(session, campaign_lead_id) if any(
+        seq.sequence_type == "linkedin" for seq in sequences) else {}
+    reachable = []
+    for seq in sequences:
+        if seq.sequence_type == "linkedin" and not manual_step_resolved(seq, records.get(seq.id)):
+            break
+        reachable.append(seq)
+    sequences = reachable
+
     to_schedule = [
-        (i, seq)
-        for i, seq in enumerate(sequences)
-        if i > last_sent_sequence_index
+        (seq.position, seq)
+        for seq in sequences
+        if seq.position > last_sent_sequence_index
     ]
     if not to_schedule:
         log.info("reserve_slots_for_lead: nothing to schedule (all already sent) cl=%s", campaign_lead_id)
@@ -529,7 +579,8 @@ async def reserve_slots_for_lead(
 
     # LOOKAHEAD OPTIMIZATION for new leads:
     # Find a start date (and inbox, if needed) where all follow-ups fit without exceeding capacity.
-    if last_sent_sequence_index == -1 and len(to_schedule) > 1:
+    if last_sent_sequence_index == -1 and len(to_schedule) > 1 and not records and not any(
+        seq.sequence_type == "linkedin" for _, seq in to_schedule):
         lookahead_attempts = 0
         max_lookahead_attempts = 30  # Try up to 30 days ahead
         original_start = current_date
@@ -580,7 +631,17 @@ async def reserve_slots_for_lead(
             current_date = original_start  # Reset to original if we exhausted attempts
 
     for idx, seq in to_schedule:
-        is_follow_up = (idx > 0)
+        if seq.sequence_type == "linkedin":
+            record = records.get(seq.id)
+            if (seq.manual_mode != "ignore" and record is not None
+                    and not record.ignored and record.sent_at is not None):
+                completed = record.sent_at.replace(tzinfo=timezone.utc) if record.sent_at.tzinfo is None else record.sent_at
+                tz = _get_tz(getattr(campaign, "timezone", None)) or timezone.utc
+                scheduled_dates.append(max(completed.astimezone(tz).date(),
+                                           scheduled_dates[-1] if scheduled_dates else start_date))
+            # Ignored steps consume neither inbox capacity nor their own delay.
+            continue
+        is_follow_up = bool(scheduled_dates) or last_sent_sequence_index >= 0
         
         if is_follow_up:
             if scheduled_dates:

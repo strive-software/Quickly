@@ -5,7 +5,7 @@ import io
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -35,8 +35,6 @@ from app.schemas import (
     LeadResponse,
     LeadUpdate,
     LeadProfile,
-    LinkedInMessage,
-    LinkedInMessagePatch,
     LeadCampaignInfo,
     MarkReplied,
 )
@@ -103,16 +101,12 @@ def _lead_to_response(
             )
         )
     profile = {key: getattr(lead, key) for key in LeadProfile.model_fields}
-    replied_at = profile["linkedin_replied_at"]
-    if replied_at and not replied_at.tzinfo:
-        profile["linkedin_replied_at"] = replied_at.replace(tzinfo=timezone.utc)
     sent_dates = [datetime.fromisoformat(row["at"]) for row in (interactions or [])
                   if row.get("kind") == "sent" and row.get("at")]
     last_sent = max((date.replace(tzinfo=timezone.utc) if not date.tzinfo else date
                      for date in sent_dates), default=None)
     return LeadResponse(
         **profile,
-        linkedin_messages=lead.linkedin_messages or [],
         last_email_sent_at=last_sent,
         id=lead.id,
         email=lead.email,
@@ -527,7 +521,7 @@ async def _finalize_lead_recovery(
         enqueue_global_recalculate(background_tasks)
 
 
-def _outreach_filters(stmt, priority, has_sent_email, linkedin_pending, apollo_id):
+def _outreach_filters(stmt, priority, has_sent_email, apollo_id):
     if priority is not None:
         stmt = stmt.where(Lead.priority == priority)
     if apollo_id is not None:
@@ -535,27 +529,14 @@ def _outreach_filters(stmt, priority, has_sent_email, linkedin_pending, apollo_i
     emailed = exists(select(EmailLog.id).where(EmailLog.lead_id == Lead.id))
     if has_sent_email is not None:
         stmt = stmt.where(emailed if has_sent_email else ~emailed)
-    if linkedin_pending:
-        stmt = stmt.where(Lead.priority == "high", emailed, Lead.linkedin_paused.is_(False),
-                          Lead.linkedin_replied_at.is_(None), func.coalesce(Lead.status, "active").notin_(["unsubscribed", "bounced", "invalid", "replied"]))
-        stmt = stmt.where(~exists(select(LeadReply.id).where(LeadReply.lead_id == Lead.id)))
-        stmt = stmt.where(~exists(select(CampaignLead.id).where(
-            CampaignLead.lead_id == Lead.id,
-            or_(CampaignLead.enrollment_status.in_(["unsubscribed", "bounced", "wrong_person"]),
-                CampaignLead.interest_status == "not_interested"))))
     return stmt
-
-
-def _pending_linkedin(leads):
-    return [lead for lead in leads if any(m.get("message", "").strip() and not m.get("sent")
-                                         for m in (lead.linkedin_messages or []))]
 
 
 @router.get("", response_model=list[LeadResponse])
 async def list_leads(
+    linkedin_pending: Annotated[bool | None, Query(include_in_schema=False)] = None,
     priority: Literal["low", "normal", "high"] | None = None,
     has_sent_email: bool | None = None,
-    linkedin_pending: bool = False,
     apollo_id: str | None = None,
     status: str | None = Query(None),
     bad_only: bool = Query(
@@ -569,20 +550,14 @@ async def list_leads(
     q: str | None = Query(None, description="Search email or name (substring)"),
     db: AsyncSession = Depends(get_db),
 ):
-    """List leads and their profile, notes, LinkedIn drafts and last tracked email.
-
-    linkedin_pending selects high-priority, previously emailed leads with an
-    unsent nonempty LinkedIn draft, no LinkedIn pause/reply, no tracked email
-    reply, and no bounced/invalid/unsubscribed/replied lead status.
-    This is a suggestion filter, not a scheduler or a send action.
-    """
+    """List lead profiles, notes and last tracked email. Manual steps live in campaigns."""
+    if linkedin_pending is not None:
+        raise HTTPException(410, "LinkedIn work moved to /api/campaigns/{campaign_id}/manual-steps")
     intr = _optional_interest_for_stmt(interest)
     stmt = _build_leads_stmt(q=q, status=status, bad_only=bad_only, interest=intr)
-    stmt = _outreach_filters(stmt, priority, has_sent_email, linkedin_pending, apollo_id)
+    stmt = _outreach_filters(stmt, priority, has_sent_email, apollo_id)
     result = await db.execute(stmt)
     leads = result.scalars().all()
-    if linkedin_pending:
-        leads = _pending_linkedin(leads)
     ids = [x.id for x in leads]
     opened, clicked, replied = await _engagement_pair_sets(db, ids)
     pairs: set[tuple[int, int]] = set()
@@ -603,9 +578,9 @@ async def list_leads(
 
 @router.get("/export")
 async def export_leads_csv(
+    linkedin_pending: Annotated[bool | None, Query(include_in_schema=False)] = None,
     priority: Literal["low", "normal", "high"] | None = None,
     has_sent_email: bool | None = None,
-    linkedin_pending: bool = False,
     apollo_id: str | None = None,
     status: str | None = Query(None),
     bad_only: bool = Query(False),
@@ -617,13 +592,13 @@ async def export_leads_csv(
     db: AsyncSession = Depends(get_db),
 ):
     """CSV export aligned with the Leads UI: core columns plus all custom_data keys."""
+    if linkedin_pending is not None:
+        raise HTTPException(410, "LinkedIn work moved to /api/campaigns/{campaign_id}/manual-steps")
     intr = _optional_interest_for_stmt(interest)
     stmt = _build_leads_stmt(q=q, status=status, bad_only=bad_only, interest=intr)
-    stmt = _outreach_filters(stmt, priority, has_sent_email, linkedin_pending, apollo_id)
+    stmt = _outreach_filters(stmt, priority, has_sent_email, apollo_id)
     result = await db.execute(stmt)
     leads = list(result.scalars().all())
-    if linkedin_pending:
-        leads = _pending_linkedin(leads)
     ids = [x.id for x in leads]
     opened, clicked, replied = await _engagement_pair_sets(db, ids)
 
@@ -632,7 +607,7 @@ async def export_leads_csv(
         cd = lead.custom_data
         if isinstance(cd, dict):
             custom_keys.update(cd.keys())
-    profile_keys = list(LeadProfile.model_fields) + ["linkedin_messages"]
+    profile_keys = list(LeadProfile.model_fields)
     sorted_custom = sorted(custom_keys - {f"lead_{key}" for key in profile_keys})
 
     output = io.StringIO()
@@ -1103,46 +1078,3 @@ async def get_lead_replies(lead_id: int, db: AsyncSession = Depends(get_db)):
         }
         for lr, name in result.all()
     ]
-
-
-@router.patch("/{lead_id}/linkedin/{position}", response_model=LinkedInMessage)
-async def update_linkedin_message(lead_id: int, position: int, data: LinkedInMessagePatch,
-                                  db: AsyncSession = Depends(get_db)):
-    """Edit one of three optional drafts; toggle sent without sending a message.
-
-    Marking sent sets UTC sent_at; unmarking clears it. An explicit timestamp
-    records a past manual send. Other message slots are preserved.
-    """
-    if not 1 <= position <= 3:
-        raise HTTPException(422, "Position must be 1, 2 or 3")
-    lead = (await db.execute(select(Lead).where(Lead.id == lead_id).with_for_update())).scalar_one_or_none()
-    if lead is None:
-        raise HTTPException(404, "Lead not found")
-    rows = list(lead.linkedin_messages or [])
-    while len(rows) < 3:
-        rows.append({"message": "", "sent": False, "sent_at": None})
-    row = dict(rows[position - 1])
-    changes = data.model_dump(exclude_unset=True)
-    if "message" in changes:
-        if data.message is None:
-            raise HTTPException(422, "Message must be text")
-        row["message"] = data.message
-    if "sent" in changes and data.sent is None:
-        raise HTTPException(422, "Sent must be true or false")
-    if "sent_at" in changes:
-        row["sent_at"] = data.sent_at.isoformat() if data.sent_at else None
-        row["sent"] = data.sent_at is not None
-    if data.sent is not None:
-        if "sent_at" in changes and data.sent != (data.sent_at is not None):
-            raise HTTPException(422, "Sent and sent_at disagree")
-        row["sent"] = data.sent
-    if row["sent"]:
-        if not row["message"].strip():
-            raise HTTPException(422, "A sent message must have text")
-        row["sent_at"] = row.get("sent_at") or datetime.now(timezone.utc).isoformat()
-    else:
-        row["sent_at"] = None
-    rows[position - 1] = row
-    lead.linkedin_messages = rows
-    await db.flush()
-    return LinkedInMessage(**row)

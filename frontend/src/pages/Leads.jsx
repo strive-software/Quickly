@@ -97,7 +97,6 @@ export default function Leads() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [interestFilter, setInterestFilter] = useState('all');
-  const [linkedinPending, setLinkedinPending] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [selected, setSelected] = useState(() => new Set());
   const [emailDrafts, setEmailDrafts] = useState({});
@@ -117,7 +116,6 @@ export default function Leads() {
     loading.start();
     try {
       const params = buildLeadsQueryParams({ tab, debouncedSearch, statusFilter, interestFilter });
-      if (linkedinPending) params.set('linkedin_pending', 'true');
       if (priorityFilter !== 'all') params.set('priority', priorityFilter);
       const qs = params.toString();
       const data = await api.get('/leads' + (qs ? `?${qs}` : ''));
@@ -136,7 +134,7 @@ export default function Leads() {
     } finally {
       loading.stop();
     }
-  }, [debouncedSearch, statusFilter, interestFilter, tab, loading, notify, linkedinPending, priorityFilter]);
+  }, [debouncedSearch, statusFilter, interestFilter, tab, loading, notify, priorityFilter]);
 
   useEffect(() => {
     loadLeads();
@@ -276,7 +274,6 @@ export default function Leads() {
 
   const exportCsv = async () => {
     const params = buildLeadsQueryParams({ tab, debouncedSearch, statusFilter, interestFilter });
-    if (linkedinPending) params.set('linkedin_pending', 'true');
     if (priorityFilter !== 'all') params.set('priority', priorityFilter);
     const qs = params.toString();
     loading.start();
@@ -386,7 +383,6 @@ export default function Leads() {
         <label>Lead priority <select className="border rounded p-2" value={priorityFilter} onChange={e => setPriorityFilter(e.target.value)}>
           {['all', 'low', 'normal', 'high'].map(value => <option key={value}>{value}</option>)}
         </select></label>
-        <label className="flex gap-2 items-center"><input type="checkbox" checked={linkedinPending} onChange={e => setLinkedinPending(e.target.checked)} />LinkedIn follow-ups: high priority, emailed, unsent draft, no reply or pause</label>
       </div>
       {tab === TAB_ALL && (
         <div className="flex flex-wrap gap-2 items-center">

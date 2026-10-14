@@ -81,15 +81,14 @@ async def _run_migrations(conn) -> None:
         return
 
     pg_alters = [
+        "ALTER TABLE lead ADD COLUMN IF NOT EXISTS company VARCHAR(255) NOT NULL DEFAULT ''",
+        "ALTER TABLE sequence ADD COLUMN IF NOT EXISTS manual_mode VARCHAR(16) NOT NULL DEFAULT 'hold'",
         "ALTER TABLE lead ADD COLUMN IF NOT EXISTS priority VARCHAR(16) NOT NULL DEFAULT 'normal'",
         "ALTER TABLE lead ADD COLUMN IF NOT EXISTS job_title VARCHAR(255) NOT NULL DEFAULT ''",
         "ALTER TABLE lead ADD COLUMN IF NOT EXISTS role_description TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE lead ADD COLUMN IF NOT EXISTS apollo_id VARCHAR(255) NOT NULL DEFAULT ''",
         "ALTER TABLE lead ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE lead ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(2048) NOT NULL DEFAULT ''",
-        "ALTER TABLE lead ADD COLUMN IF NOT EXISTS linkedin_paused BOOLEAN NOT NULL DEFAULT FALSE",
-        "ALTER TABLE lead ADD COLUMN IF NOT EXISTS linkedin_replied_at TIMESTAMP WITH TIME ZONE NULL",
-        "ALTER TABLE lead ADD COLUMN IF NOT EXISTS linkedin_messages JSON NOT NULL DEFAULT '[]'",
         "ALTER TABLE campaign ADD COLUMN IF NOT EXISTS llm_voice TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE email_log ADD COLUMN IF NOT EXISTS body TEXT NULL",
         "ALTER TABLE email_log ADD COLUMN IF NOT EXISTS is_html BOOLEAN NULL",
@@ -308,6 +307,15 @@ async def _run_migrations(conn) -> None:
             """
         )
     )
+
+    company_once = await conn.execute(text("""INSERT INTO _app_schema_migrations(id)
+        VALUES ('20261014_lead_company') ON CONFLICT DO NOTHING RETURNING id"""))
+    if company_once.first() is not None:
+        await conn.execute(text("""UPDATE lead SET company=LEFT(custom_data->>'company',255)
+            WHERE company='' AND json_typeof(custom_data->'company')='string'"""))
+
+    from app.manual_migration import migrate_manual_steps
+    await migrate_manual_steps(conn)
 
 
 async def init_db():

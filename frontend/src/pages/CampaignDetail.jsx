@@ -1,3 +1,4 @@
+import ManualLinkedInSteps, { ManualLinkedInFields } from '../components/ManualLinkedInSteps';
 import EmailPreviewModal from '../components/EmailPreviewModal';
 import { useParams } from 'react-router-dom';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -2836,7 +2837,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
   const confirm     = useConfirm();
   const loadingCtrl = useLoading();
   const [pos, setPos] = useState(sequences.length);
-  const [form, setForm] = useState({ subject: '', body: '', wait_days_after_previous: 0, is_html: false, preview_text: '', sequence_type: 'standard', fallback_subject: '', fallback_body: '' });
+  const [form, setForm] = useState({ subject: '', body: '', wait_days_after_previous: 0, is_html: false, preview_text: '', sequence_type: 'standard', manual_mode: 'hold', fallback_subject: '', fallback_body: '' });
   const [msg,  setMsg]  = useState(null);
   const [editing,         setEditing]         = useState(null);
   const [originalEditing, setOriginalEditing] = useState(null);
@@ -2866,7 +2867,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
   );
 
   const openEdit = (seq) => {
-    const copy = { ...seq, is_html: seq.is_html ?? false, preview_text: seq.preview_text ?? '', sequence_type: seq.sequence_type ?? 'standard', fallback_subject: seq.fallback_subject ?? '', fallback_body: seq.fallback_body ?? '' };
+    const copy = { ...seq, is_html: seq.is_html ?? false, preview_text: seq.preview_text ?? '', sequence_type: seq.sequence_type ?? 'standard', manual_mode: seq.manual_mode ?? 'hold', fallback_subject: seq.fallback_subject ?? '', fallback_body: seq.fallback_body ?? '' };
     copy._previous_type = copy.sequence_type;
     setEditing(copy);
     setOriginalEditing(copy);
@@ -2891,7 +2892,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
     e.preventDefault();
     try {
       await api.post(`/campaigns/${campaignId}/sequences`, { ...form, position: pos });
-      setForm({ subject: '', body: '', wait_days_after_previous: 0, is_html: false, preview_text: '', sequence_type: 'standard', fallback_subject: '', fallback_body: '' });
+      setForm({ subject: '', body: '', wait_days_after_previous: 0, is_html: false, preview_text: '', sequence_type: 'standard', manual_mode: 'hold', fallback_subject: '', fallback_body: '' });
       setMsg({ type: 'success', text: 'Sequence added' });
       setShowAddForm(false);
       refresh();
@@ -2904,7 +2905,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
     e.preventDefault();
     loadingCtrl.start();
     try {
-      const { _previous_type, ...payload } = editing || {};
+      const payload = Object.fromEntries(Object.entries(editing || {}).filter(([key, value]) => !key.startsWith('_') && value !== originalEditing?.[key]));
       await api.patch(`/campaigns/${campaignId}/sequences/${editing.id}`, payload);
       notify({ type: 'success', message: 'Sequence updated' });
       setEditing(null);
@@ -2969,10 +2970,15 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
     setShowVariantForm(true);
   };
 
-  const getCumulativeDay = (idx) => {
+  const getTimingLabel = (idx) => {
     let days = 0;
-    for (let i = 0; i <= idx; i++) days += sequences[i]?.wait_days_after_previous || 0;
-    return days;
+    for (let i = 0; i <= idx; i++) {
+      const step = sequences[i];
+      if (step?.sequence_type === 'linkedin') {
+        if (step.manual_mode !== 'ignore') return i === idx ? 'Manual completion required' : 'After manual completion';
+      } else days += step?.wait_days_after_previous || 0;
+    }
+    return `Day ${days}`;
   };
 
   return (
@@ -2990,7 +2996,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
           <div className="relative">
             {sequences.map((s, idx) => {
               const isActive = editing?.id === s.id || (selectedIdx === idx && !editing && !showAddForm);
-              const cumulDay = getCumulativeDay(idx);
+              const timingLabel = getTimingLabel(idx);
               return (
                 <div key={s.id}>
                   {/* Step row — circle column is always exactly w-8 so all cards are the same width */}
@@ -3009,7 +3015,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                     >
                       <div className="flex items-center gap-1 min-w-0">
                         <span className={`text-sm font-medium truncate min-w-0 flex-1 ${isActive ? 'text-teal-700' : 'text-gray-800'}`}>
-                          {s.sequence_type === 'personalized'
+                          {s.sequence_type === 'linkedin' ? 'Manual LinkedIn' : s.sequence_type === 'personalized'
                             ? (s.fallback_subject || <em className="text-purple-400 font-normal text-xs">Custom per lead</em>)
                             : (s.subject || <em className="text-gray-400 font-normal text-xs">Reply in thread</em>)
                           }
@@ -3017,7 +3023,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                         {s.is_html && <span className="text-[9px] bg-blue-100 text-blue-600 rounded px-1 py-0.5 font-medium shrink-0">HTML</span>}
                         {s.sequence_type === 'personalized' && <span className="text-[9px] bg-purple-100 text-purple-600 rounded px-1 py-0.5 font-medium shrink-0">Personalized</span>}
                       </div>
-                      <div className="text-[11px] text-gray-400 mt-0.5">Day {cumulDay}{idx === 0 ? ' (start)' : ''}</div>
+                      <div className="text-[11px] text-gray-400 mt-0.5">{timingLabel}</div>
                     </button>
                   </div>
                   {/* Connector between steps — rendered as its own row so it never affects card width */}
@@ -3026,7 +3032,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                       <div className="w-8 shrink-0 flex flex-col items-center">
                         <div className="w-0.5 h-4 bg-gray-300" />
                         <div className="text-[10px] font-medium text-gray-400 bg-gray-100 border border-gray-200 rounded-full px-2 py-0.5 my-0.5 whitespace-nowrap">
-                          {sequences[idx + 1]?.wait_days_after_previous || 0}d wait
+                          {sequences[idx + 1]?.sequence_type === 'linkedin' && sequences[idx + 1]?.manual_mode === 'ignore' ? 'No hold' : `${sequences[idx + 1]?.wait_days_after_previous || 0}d wait`}
                         </div>
                         <div className="w-0.5 h-4 bg-gray-300" />
                       </div>
@@ -3060,17 +3066,17 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
             <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
               <div>
                 <h3 className="font-semibold text-gray-800">Edit Step #{editing.position + 1}</h3>
-                <p className="text-xs text-gray-400">Modify the email content and timing</p>
+                <p className="text-xs text-gray-400">Modify the step content and timing</p>
               </div>
               <div className="flex gap-2">
-                {(editing.sequence_type || 'standard') !== 'personalized' && (
+                {(editing.sequence_type || 'standard') === 'standard' && (
                   <Button size="sm" variant="outline" onClick={() => { setPreviewSeq(editing); setPreviewVariant(null); setPreviewOverride(editing); }}>Preview</Button>
                 )}
                 <Button size="sm" variant="destructive" onClick={() => deleteSeq(editing)}>Delete</Button>
               </div>
             </div>
             <form onSubmit={saveEdit} className="flex-1 overflow-y-auto p-6 space-y-5">
-              {(editing.sequence_type || 'standard') === 'personalized' ? (
+              {editing.sequence_type === 'linkedin' ? <ManualLinkedInFields value={editing} onChange={updateEditing} /> : (editing.sequence_type || 'standard') === 'personalized' ? (
                 <>
                   <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg text-xs text-purple-700">
                     This is a personalized step. Write fallback content that will appear as placeholder text when composing each lead's custom email.
@@ -3107,6 +3113,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Sequence type</label>
                 <select
                   className="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  aria-label="Sequence type"
                   value={editing.sequence_type || 'standard'}
                   onChange={e => {
                     const nextType = e.target.value;
@@ -3117,7 +3124,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                         if (nextType === 'personalized') {
                           next.fallback_subject = ed.subject || '';
                           next.fallback_body = ed.body || '';
-                        } else {
+                        } else if (ed.sequence_type === 'personalized') {
                           next.subject = ed.fallback_subject || '';
                           next.body = ed.fallback_body || '';
                         }
@@ -3127,8 +3134,10 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                     setEditDirty(true);
                   }}
                 >
-                  <option value="standard">Standard — same content for all leads</option>
-                  <option value="personalized">Personalized — custom content per lead</option>
+                  {editing.sequence_type === 'linkedin' ? <option value="linkedin">Manual LinkedIn</option> : <>
+                    <option value="standard">Standard — same content for all leads</option>
+                    <option value="personalized">Personalized — custom content per lead</option>
+                  </>}
                 </select>
                 {(editing.sequence_type || 'standard') === 'personalized' && (
                   <p className="text-xs text-purple-600 mt-1">
@@ -3157,14 +3166,14 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
           <div className="flex-1 flex flex-col overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
               <div>
-                <h3 className="font-semibold text-gray-800">Step {selectedSeq.position + 1}{selectedSeq.sequence_type === 'personalized'
+                <h3 className="font-semibold text-gray-800">Step {selectedSeq.position + 1}{selectedSeq.sequence_type === 'linkedin' ? ' — Manual LinkedIn' : selectedSeq.sequence_type === 'personalized'
                   ? (selectedSeq.fallback_subject ? ` — ${selectedSeq.fallback_subject}` : ' — Custom per lead')
                   : (selectedSeq.subject ? ` — ${selectedSeq.subject}` : ' — Reply in thread')
                 }</h3>
-                <p className="text-xs text-gray-400">{selectedSeq.wait_days_after_previous}d wait{selectedSeq.is_html ? ' · HTML' : ' · Plain text'}{' · Day ' + getCumulativeDay(selectedIdx)}</p>
+                <p className="text-xs text-gray-400">{getTimingLabel(selectedIdx)}{selectedSeq.sequence_type !== 'linkedin' && (selectedSeq.is_html ? ' · HTML' : ' · Plain text')}</p>
               </div>
               <div className="flex gap-2">
-                {(selectedSeq.sequence_type || 'standard') !== 'personalized' && (
+                {(selectedSeq.sequence_type || 'standard') === 'standard' && (
                   <Button size="sm" variant="outline" onClick={() => { setPreviewSeq(selectedSeq); setPreviewOverride(null); }}>Preview</Button>
                 )}
                 <Button size="sm" variant="default" onClick={() => openEdit(selectedSeq)}>Edit</Button>
@@ -3172,7 +3181,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
-              {(selectedSeq.sequence_type || 'standard') !== 'personalized' && (
+              {(selectedSeq.sequence_type || 'standard') === 'standard' && (
                 <>
                   <div className="mb-5">
                     <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1">Subject</span>
@@ -3189,6 +3198,8 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                 </>
               )}
 
+              {selectedSeq.sequence_type === 'linkedin' && <ManualLinkedInSteps key={`${selectedSeq.id}-${selectedSeq.manual_mode}-${selectedSeq.wait_days_after_previous}`} campaignId={campaignId} sequence={selectedSeq} />}
+
               {/* ── Personalized Sequence: Custom Emails ── */}
               {(selectedSeq.sequence_type || 'standard') === 'personalized' && (
                 <PersonalizedSequenceSection
@@ -3204,7 +3215,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
               )}
 
               {/* ── A/B Variants ── */}
-              {(selectedSeq.sequence_type || 'standard') !== 'personalized' && (
+              {(selectedSeq.sequence_type || 'standard') === 'standard' && (
               <div className="mt-6 pt-6 border-t border-gray-200">
                 <div className="flex items-center justify-between mb-3">
                   <div>
@@ -3289,7 +3300,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
             </div>
             <form onSubmit={submit} className="flex-1 overflow-y-auto p-6 space-y-5">
               {msg && <div className={`rounded-lg px-3 py-2 text-sm ${msg.type === 'error' ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>{msg.text}</div>}
-              {(form.sequence_type || 'standard') === 'personalized' ? (
+              {form.sequence_type === 'linkedin' ? <ManualLinkedInFields value={form} onChange={patch => setForm(f => ({ ...f, ...patch }))} /> : (form.sequence_type || 'standard') === 'personalized' ? (
                 <>
                   <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg text-xs text-purple-700">
                     This is a personalized step. Write fallback content that will appear as placeholder text when composing each lead's custom email.
@@ -3320,6 +3331,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Sequence type</label>
                 <select
                   className="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  aria-label="Sequence type"
                   value={form.sequence_type || 'standard'}
                   onChange={e => {
                     const newType = e.target.value;
@@ -3329,7 +3341,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                         if (newType === 'personalized') {
                           next.fallback_subject = f.subject || '';
                           next.fallback_body = f.body || '';
-                        } else {
+                        } else if (f.sequence_type === 'personalized') {
                           next.subject = f.fallback_subject || '';
                           next.body = f.fallback_body || '';
                         }
@@ -3340,6 +3352,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                 >
                   <option value="standard">Standard — same content for all leads</option>
                   <option value="personalized">Personalized — custom content per lead</option>
+                  <option value="linkedin">Manual LinkedIn</option>
                 </select>
                 {(form.sequence_type || 'standard') === 'personalized' && (
                   <p className="text-xs text-purple-600 mt-1">Leads will need a custom email written for this step before sending starts.</p>

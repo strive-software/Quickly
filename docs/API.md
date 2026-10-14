@@ -494,7 +494,7 @@ List leads with optional filters. Each item includes enrollments and verificatio
 
 Download leads as **CSV** (`text/csv`). Uses the **same filters** as `GET /api/leads` (`q`, `status`, `bad_only`, `interest`), with the same stacking rules.
 
-**Columns:** `id`, `email`, `name`, `email_verification_status`, `campaigns` (semicolon-separated names), **`enrollments_json`** (JSON array of per-campaign enrollment slices: `campaign_id`, `campaign_public_id`, `campaign_name`, `status`, `interest`, `opened`, `clicked`, `replied`, `sending_paused`), `enrolled_earliest` (ISO date), then dedicated profile columns (`lead_priority`, `lead_job_title`, `lead_role_description`, `lead_apollo_id`, `lead_notes`, `lead_linkedin_url`, `lead_linkedin_paused`, `lead_linkedin_replied_at`, `lead_linkedin_messages`), then every **`custom_data` key** (sorted alphabetically, excluding reserved profile column names). Object/array values in `custom_data` are JSON-encoded in the cell.
+**Columns:** `id`, `email`, `name`, `email_verification_status`, `campaigns` (semicolon-separated names), **`enrollments_json`** (JSON array of per-campaign enrollment slices: `campaign_id`, `campaign_public_id`, `campaign_name`, `status`, `interest`, `opened`, `clicked`, `replied`, `sending_paused`), `enrolled_earliest` (ISO date), then dedicated profile columns (`lead_priority`, `lead_company`, `lead_job_title`, `lead_role_description`, `lead_apollo_id`, `lead_notes`, `lead_linkedin_url`), then every **`custom_data` key** (sorted alphabetically, excluding reserved profile column names). Object/array values in `custom_data` are JSON-encoded in the cell.
 
 **Response:** File download (`Content-Disposition: attachment; filename="leads_export.csv"` or `leads_bounced_invalid.csv` when `bad_only=true`).
 
@@ -766,7 +766,7 @@ Export the campaign's leads as a CSV file.
 
 ### `POST /api/campaigns/{id}/leads/import`
 
-Import leads from a CSV file. Expects an `email` column; `name` sets the lead name and extra columns become `custom_data`. Dedicated profile fields use reserved `lead_`-prefixed columns (listed under lead export); `lead_linkedin_messages` is a JSON array of up to three message records. Unprefixed `job_title`, `notes`, `priority`, and similar columns continue to populate custom template fields. Reserved columns (not merged into `custom_data`): **`status`**, **`interest`**, **`email_verification_status`** (same semantics as bulk add).
+Import leads from a CSV file. Expects an `email` column; `name` sets the lead name and extra columns become `custom_data`. Dedicated profile fields use reserved `lead_`-prefixed columns (listed under lead export). Unprefixed `job_title`, `notes`, `priority`, and similar columns continue to populate custom template fields. Reserved columns (not merged into `custom_data`): **`status`**, **`interest`**, **`email_verification_status`** (same semantics as bulk add).
 
 **Query params:** `skip_duplicates` (default `true`), `verify_emails` (default `false`)
 
@@ -1714,3 +1714,36 @@ Common HTTP status codes:
 | 422 | Unprocessable entity (Pydantic validation) |
 | 429 | Too many requests (rate limit: 200 req/min) |
 | 500 | Internal server error |
+
+## Manual LinkedIn campaign steps
+
+Create/update a sequence with `sequence_type: "linkedin"` and
+`manual_mode: "hold"` or `"ignore"`. Hold waits for manual completion (Done/sent)
+or an enrollment-level skip; Ignore never blocks email progression or adds delay,
+regardless of Pending/Done. Nothing is sent automatically to LinkedIn.
+
+- `GET /api/campaigns/{campaign_id}/manual-steps`: per-enrollment message,
+  `sent`, timezone-aware `sent_at`, `ignored`, `mode`, and `ready`.
+  Optional filters: `ready_only`, `priority`, `has_sent_email` (this campaign).
+- `PATCH /api/campaigns/{campaign_id}/leads/{lead_id}/manual-steps/{sequence_id}`:
+  optional `message`, `sent`, `sent_at`, `ignored`. Marking sent records now;
+  unmarking clears the date. An explicit aware timestamp supports historical sends.
+  Ignore is independent; it never changes the sent record.
+
+The former lead-level LinkedIn message fields and update route are removed.
+The profile URL remains on the lead. Manual send history is isolated by campaign.
+
+Ignore controls email progression, not Pending/Done tracking: `ready_only` includes
+pending Ignore-mode tasks after prior steps have progressed. Explicit per-lead
+Ignore suppresses that task. Completed enrollments remain stopped even when a
+manual step is reopened; reopen the enrollment explicitly to resume email sending.
+List manual work can also filter `lead_id` and `sequence_id`.
+
+Sequence positions must be nonnegative and unused. Steps at/before sent email
+history cannot be deleted because history is keyed by position. Use Ignore for
+manual steps. Changing between an email and manual type requires a new step;
+this prevents a LinkedIn draft being turned into an outgoing email implicitly.
+
+A Hold step’s wait days determine when its manual task becomes ready. The next
+email’s own delay starts from manual completion (never before the preceding
+email). Ignore contributes no delay to email scheduling.

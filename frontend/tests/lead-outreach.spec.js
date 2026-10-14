@@ -38,31 +38,20 @@ async function visit(page, path) {
   await page.getByRole('button', { name: 'Skip onboarding' }).click();
 }
 
-test('profile saves Apollo ID and notes, message sent can be undone independently', async ({ page }) => {
+test('profile saves Apollo ID and notes without lead-level LinkedIn messages', async ({ page }) => {
   const writes = await mock(page);
   await visit(page, '/leads/1');
   await page.getByLabel('Apollo ID').fill('apollo-123');
   await page.getByLabel('Job title', { exact: true }).fill('VP Operations');
+  await page.getByLabel('Company', { exact: true }).fill('Acme');
   await page.getByLabel('Notes', { exact: true }).fill('Met in person');
   await page.getByRole('button', { name: 'Save profile & notes' }).click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0].body).not.toHaveProperty('linkedin_paused');
   expect(writes[0].body).not.toHaveProperty('linkedin_replied_at');
-  expect(writes[0].body).toMatchObject({ apollo_id: 'apollo-123', job_title: 'VP Operations', notes: 'Met in person' });
-  await page.getByLabel('LinkedIn message 2 (optional)').fill('Following up');
-  const form = page.getByRole('button', { name: 'Save message 2' }).locator('..');
-  await form.getByLabel('Message sent', { exact: true }).check();
-  await form.getByRole('button').click();
-  await expect.poll(() => writes.length).toBe(2);
-  expect(writes[1]).toEqual({ path: '/api/leads/1/linkedin/2', body: { message: 'Following up', sent: true } });
-  await page.getByLabel('LinkedIn message 2 (optional)').fill('Following up again');
-  await form.getByRole('button').click();
-  await expect.poll(() => writes.length).toBe(3);
-  expect(writes[2].body).not.toHaveProperty('sent_at');
-  await form.getByLabel('Message sent', { exact: true }).uncheck();
-  await form.getByRole('button').click();
-  await expect.poll(() => writes.length).toBe(4);
-  expect(writes[3].body.sent).toBe(false);
+  expect(writes[0].body).toMatchObject({ apollo_id: 'apollo-123', job_title: 'VP Operations', company: 'Acme', notes: 'Met in person' });
+  await expect(page.getByText('Pause LinkedIn outreach')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Save message/ })).toHaveCount(0);
 });
 
 test('global and sequence voice are editable in their settings', async ({ page }) => {
@@ -76,4 +65,68 @@ test('global and sequence voice are editable in their settings', async ({ page }
   await page.getByRole('textbox', { name: /^Sequence LLM Voice/ }).fill('Focus on operations');
   await page.getByRole('button', { name: 'Save settings', exact: true }).click();
   await expect.poll(() => writes.some(w => w.body.llm_voice === 'Focus on operations')).toBe(true);
+});
+
+test('campaign manual step supports pending/done, dates and independent ignore', async ({ page }) => {
+  await mock(page);
+  const writes = [];
+  let record = { campaign_lead_id: 11, lead_id: 1, name: 'Alex', email: 'alex@example.com', priority: 'high', sequence_id: 3, position: 1, message: 'Hello Alex', sent: false, sent_at: null, ignored: false, ready: true, mode: 'hold' };
+  await page.route('**/api/campaigns/1/sequences', route => route.fulfill({ json: [{ id: 3, position: 1, sequence_type: 'linkedin', manual_mode: 'hold', body: '', wait_days_after_previous: 0 }] }));
+  await page.route('**/api/campaigns/1/manual-steps?*', route => route.fulfill({ json: [record] }));
+  await page.route('**/api/campaigns/1/leads/1/manual-steps/3', route => {
+    const body = route.request().postDataJSON(); writes.push(body);
+    record = { ...record, ...body };
+    record.sent_at = record.sent ? record.sent_at || '2026-10-13T12:00:35Z' : null;
+    return route.fulfill({ json: record });
+  });
+  await visit(page, '/campaigns/1#sequences');
+  const form = page.getByRole('form', { name: 'LinkedIn for alex@example.com' });
+  await expect(form.getByText('Pending · Ready — waiting for manual completion')).toBeVisible();
+  await form.getByRole('textbox', { name: 'Message', exact: true }).fill('Personal follow up');
+  await form.getByRole('combobox', { name: 'Status', exact: true }).selectOption('done');
+  await form.getByLabel('Ignore for this lead').check();
+  await form.getByRole('button', { name: 'Save manual step' }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toMatchObject({ message: 'Personal follow up', sent: true, ignored: true });
+  await expect(form.getByRole('button', { name: 'Save manual step' })).toBeEnabled();
+  await expect(form.getByLabel(/^Sent at/)).not.toBeEmpty();
+  await expect(form.getByText('Done · Ignored')).toBeVisible();
+  await form.getByRole('textbox', { name: 'Message', exact: true }).fill('Updated text');
+  await form.getByRole('button', { name: 'Save manual step' }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toEqual({ message: 'Updated text' });
+  await expect(form.getByRole('button', { name: 'Save manual step' })).toBeEnabled();
+  await form.getByRole('combobox', { name: 'Status', exact: true }).selectOption('pending');
+  await form.getByRole('button', { name: 'Save manual step' }).click();
+  await expect.poll(() => writes.length).toBe(3);
+  expect(writes[2]).toEqual({ sent: false });
+  await expect(form.getByLabel('Ignore for this lead')).toBeChecked();
+  await expect(form.getByText('Pending · Ignored')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Add Step', exact: true }).click();
+  await page.getByLabel('Sequence type').selectOption('linkedin');
+  await expect(page.getByRole('combobox', { name: 'Manual step behavior', exact: true })).toHaveValue('hold');
+  await page.getByRole('combobox', { name: 'Manual step behavior', exact: true }).selectOption('ignore');
+  await expect(page.getByLabel('LinkedIn draft (optional)')).toBeVisible();
+  await expect(page.getByText('Email Body *', { exact: true })).toHaveCount(0);
+});
+
+test('editing manual draft sends only content and keeps type fixed', async ({ page }) => {
+  await mock(page);
+  const writes = [];
+  const sequence = { id: 3, position: 0, sequence_type: 'linkedin', manual_mode: 'ignore', body: 'Initial draft', wait_days_after_previous: 9 };
+  await page.route('**/api/campaigns/1/sequences', route => route.fulfill({ json: [sequence] }));
+  await page.route('**/api/campaigns/1/sequences/3', route => {
+    const body = route.request().postDataJSON(); writes.push(body);
+    return route.fulfill({ json: { ...sequence, ...body } });
+  });
+  await page.route('**/api/campaigns/1/manual-steps?*', route => route.fulfill({ json: [{ campaign_lead_id: 11, lead_id: 1, email: 'alex@example.com', sequence_id: 3, message: 'Draft', sent: false, ignored: false, ready: true, mode: 'ignore' }] }));
+  await visit(page, '/campaigns/1#sequences');
+  await expect(page.getByText('Pending · Does not hold email')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Manual LinkedIn Day 0' })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByLabel('Sequence type').locator('option')).toHaveCount(1);
+  await page.getByRole('textbox', { name: 'LinkedIn draft (optional)' }).fill('Revised draft');
+  await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
+  await expect.poll(() => writes).toEqual([{ body: 'Revised draft' }]);
 });

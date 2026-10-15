@@ -1,3 +1,4 @@
+import LeadName from '../components/LeadName';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -527,7 +528,7 @@ export default function Leads() {
                       {l.email}
                     </Link>
                   </td>
-                  <td className="p-2 align-top">{l.name || '—'}</td>
+                  <td className="p-2 align-top"><LeadName name={l.name} linkedinUrl={l.linkedin_url} /></td>
                   <td className="p-2 align-top">
                     <div className="flex flex-wrap gap-1">
                       {l.email_verification_status && (

@@ -1,3 +1,4 @@
+import LeadName from '../components/LeadName';
 import ManualLinkedInSteps, { ManualLinkedInFields } from '../components/ManualLinkedInSteps';
 import EmailPreviewModal from '../components/EmailPreviewModal';
 import { useParams } from 'react-router-dom';
@@ -1062,7 +1063,7 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
                     </button>
                   </td>
                   {/* name */}
-                  <td className="px-4 py-2.5 text-gray-700">{l.name || <span className="text-gray-300">—</span>}</td>
+                  <td className="px-4 py-2.5 text-gray-700"><LeadName name={l.name} linkedinUrl={l.linkedin_url} fallback={<span className="text-gray-300">—</span>} /></td>
                   {/* status badges */}
                   <td className="px-4 py-2.5">
                     <div className="flex flex-wrap gap-1">
@@ -2244,6 +2245,7 @@ function SequenceBodyEditor({ value, onChange, isHtml, onIsHtmlChange, previewTe
 // ─── Preview Modal ────────────────────────────────────────────────────────────
 function PreviewModal({ sequence, campaignId, leads, onClose, variant = null, editingOverride = null }) {
   const [leadId,    setLeadId]    = useState(leads[0]?.lead_id ?? '');
+  const selectedLead = leads.find(lead => String(lead.lead_id) === String(leadId));
   const [preview,   setPreview]   = useState(null);
   const [loading,   setLoading]   = useState(false);
   const [err,       setErr]       = useState(null);
@@ -2334,6 +2336,9 @@ function PreviewModal({ sequence, campaignId, leads, onClose, variant = null, ed
               </option>
             ))}
           </select>
+          {selectedLead?.name && selectedLead?.linkedin_url && (
+            <LeadName name={selectedLead.name} linkedinUrl={selectedLead.linkedin_url} />
+          )}
           {preview?.tracking_note && (
             <span className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
               ℹ {preview.tracking_note}
@@ -2624,7 +2629,7 @@ function PersonalizedSequenceSection({ sequence, sequences, personalizedSequence
                   <tr key={l.lead_id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="px-3 py-2">
                       <span className="font-mono text-xs">{l.email}</span>
-                      {l.name && <span className="text-gray-400 text-xs ml-1">({l.name})</span>}
+                      {l.name && <span className="text-gray-400 text-xs ml-1">(<LeadName name={l.name} linkedinUrl={l.linkedin_url} />)</span>}
                     </td>
                     {personalizedSequences.length > 1 && (
                       <td className="px-3 py-2">
@@ -2755,7 +2760,7 @@ function CustomEmailEditorModal({ target, campaignId, onClose, onSaved }) {
           <div>
             <h2 className="font-semibold text-gray-800">Custom Email</h2>
             <p className="text-xs text-gray-400">
-              {lead.email}{lead.name ? ` — ${lead.name}` : ''}
+              {lead.email}{lead.name && <> — <LeadName name={lead.name} linkedinUrl={lead.linkedin_url} /></>}
               {' · '}Step {(sequence.position ?? 0) + 1}
             </p>
           </div>

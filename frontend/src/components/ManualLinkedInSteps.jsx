@@ -1,3 +1,4 @@
+import LeadName from './LeadName';
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Button } from './ui/Button';
@@ -41,7 +42,7 @@ function LeadManualStep({ campaignId, initial }) {
     finally { setBusy(false); }
   }
   return <form onSubmit={save} className="border rounded-lg p-4 space-y-3" aria-label={`LinkedIn for ${initial.email}`}>
-    <div><strong>{initial.name || initial.email}</strong> <span className="text-sm text-gray-500">{initial.email} · {initial.priority} priority</span></div>
+    <div><strong><LeadName name={initial.name} linkedinUrl={initial.linkedin_url} fallback={initial.email} /></strong> <span className="text-sm text-gray-500">{initial.email} · {initial.priority} priority</span></div>
     <p className="text-sm">{saved.sent ? 'Done' : 'Pending'} · {saved.ignored ? 'Ignored' : saved.mode === 'ignore' ? 'Does not hold email' : saved.sent ? 'Completed' : saved.ready ? 'Ready — waiting for manual completion' : 'Not ready'}</p>
     {initial.linkedin_url && /^https:\/\/([a-z0-9-]+\.)*linkedin\.com\//i.test(initial.linkedin_url) && <a className="text-teal-700 underline" href={initial.linkedin_url} target="_blank" rel="noreferrer">Open LinkedIn profile</a>}
     <fieldset disabled={busy} className="space-y-3">

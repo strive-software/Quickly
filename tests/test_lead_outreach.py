@@ -90,3 +90,13 @@ async def test_bulk_and_csv_preserve_profile_and_export_messages(session):
     row = next(csv.DictReader(io.StringIO(content)))
     assert row['lead_apollo_id'] == 'apollo-existing'
     assert row['job_title'] == 'Template title'
+
+async def test_campaign_lead_list_includes_linkedin_profile(session):
+    from app.routers.campaigns import list_campaign_leads
+    campaign = await make_campaign(session)
+    lead = await make_lead(session)
+    lead.linkedin_url = 'https://www.linkedin.com/in/alex'
+    await session.flush()
+    await make_campaign_lead(session, campaign.id, lead.id)
+    rows = await list_campaign_leads(campaign.id, session)
+    assert rows[0]['linkedin_url'] == lead.linkedin_url

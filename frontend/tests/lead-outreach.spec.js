@@ -130,3 +130,25 @@ test('editing manual draft sends only content and keeps type fixed', async ({ pa
   await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
   await expect.poll(() => writes).toEqual([{ body: 'Revised draft' }]);
 });
+
+for (const linkedinUrl of ['https://www.linkedin.com/in/alex', '', 'https://linkedin.com.evil.example/in/alex']) {
+  test(`lead name links only to LinkedIn: ${linkedinUrl || 'missing profile'}`, async ({ page }) => {
+    await mock(page);
+    const lead = { id: 1, lead_id: 1, name: 'Alex', email: 'alex@example.com', linkedin_url: linkedinUrl, campaigns: [], interactions: [], custom_data: {} };
+    await page.route('**/api/leads/1', route => route.fulfill({ json: lead }));
+    await page.route('**/api/campaigns/1/leads', route => route.fulfill({ json: [lead] }));
+    await visit(page, '/campaigns/1#leads');
+    for (const path of ['/campaigns/1#leads', '/leads/1']) {
+      await page.goto(path);
+      const name = page.getByRole('link', { name: 'Alex', exact: true });
+      if (linkedinUrl === 'https://www.linkedin.com/in/alex') {
+        await expect(name).toHaveAttribute('href', linkedinUrl);
+        await expect(name).toHaveAttribute('target', '_blank');
+        await expect(name).toHaveAttribute('rel', 'noopener noreferrer');
+      } else {
+        await expect(page.getByText('Alex', { exact: true }).first()).toBeVisible();
+        await expect(name).toHaveCount(0);
+      }
+    }
+  });
+}

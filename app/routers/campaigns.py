@@ -1178,6 +1178,7 @@ async def list_campaign_leads(campaign_id: int, db: AsyncSession = Depends(get_d
             "lead_id": lead.id,
             "email": lead.email,
             "name": lead.name,
+            "linkedin_url": lead.linkedin_url or "",
             "status": getattr(cl, "enrollment_status", None) or "active",
             "interest": cl.interest_status,
             "custom_data": lead.custom_data or {},

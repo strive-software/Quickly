@@ -289,6 +289,7 @@ async def test_serialize_scheduled_with_resolved_content(session):
     inbox = await make_inbox(session)
     campaign = await make_campaign(session)
     lead = await make_lead(session, name="Test")
+    lead.linkedin_url = "https://www.linkedin.com/in/test"
     cl = await make_campaign_lead(session, campaign.id, lead.id)
     seq = await make_sequence(session, campaign.id)
     slot = await make_queue_slot(session, cl.id, inbox.id)
@@ -307,6 +308,7 @@ async def test_serialize_scheduled_with_resolved_content(session):
     assert result["sequence_is_html"] is True
     assert result["variant_id"] == 42
     assert result["has_variants"] is True
+    assert result["lead_linkedin_url"] == lead.linkedin_url
 
 
 @pytest.mark.asyncio

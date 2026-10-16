@@ -1,4 +1,6 @@
 import LeadName from '../components/LeadName';
+import LeadDetailsPanel from '../components/LeadDetailsPanel';
+import RetryLeadVerification from '../components/RetryLeadVerification';
 import ManualLinkedInSteps, { ManualLinkedInFields } from '../components/ManualLinkedInSteps';
 import EmailPreviewModal from '../components/EmailPreviewModal';
 import { useParams } from 'react-router-dom';
@@ -422,11 +424,11 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
   const notify  = useNotify();
   const confirm = useConfirm();
   const [mode, setMode]   = useState('single');
+  const [detailLeadId, setDetailLeadId] = useState(null);
   const [single, setSingle] = useState({ email: '', name: '', custom: '' });
   const [bulk, setBulk]   = useState('');
   const [msg, setMsg]     = useState(null);
   const [skipDuplicates, setSkipDuplicates] = useState(true);
-  const [verifyEmails, setVerifyEmails] = useState(false);
   const [emailVerifEnabled, setEmailVerifEnabled] = useState(() => {
     try { return localStorage.getItem('emailVerifEnabled') === 'true'; } catch { return false; }
   });
@@ -503,6 +505,12 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
   }, [campaignId]);
 
   useEffect(() => { loadVerificationSummary(); }, [loadVerificationSummary]);
+
+  useEffect(() => {
+    if (!verificationSummary?.statuses?.pending) return undefined;
+    const timer = setInterval(() => { loadVerificationSummary(); refresh(); }, 5000);
+    return () => clearInterval(timer);
+  }, [verificationSummary?.statuses?.pending, loadVerificationSummary, refresh]);
 
   useEffect(() => {
     api.get('/settings/email-verification').then(d => {
@@ -632,8 +640,9 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
         custom_data,
       }]);
       setSingle({ email: '', name: '', custom: '' });
-      notify({ type: 'success', message: 'Lead added' });
+      notify({ type: 'success', message: 'Lead added. Email verification is queued automatically.' });
       refresh();
+      loadVerificationSummary();
     } catch (e) {
       setMsg({ type: 'error', text: e.message });
     }
@@ -718,14 +727,14 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
     try {
       let res;
       if (confirmPayload) {
-        res = await api.post(`/campaigns/${campaignId}/leads?skip_duplicates=${skipDuplicates}&verify_emails=${verifyEmails}`, confirmPayload);
+        res = await api.post(`/campaigns/${campaignId}/leads?skip_duplicates=${skipDuplicates}`, confirmPayload);
         setBulk('');
         const dupMsg = res.duplicate_leads?.length ? ` (${res.duplicate_leads.length} duplicate(s) skipped)` : '';
-        notify({ type: 'success', message: `${res.added || confirmPayload.length} lead(s) added${dupMsg}` });
+        notify({ type: 'success', message: `${res.added || confirmPayload.length} lead(s) added${dupMsg}. Email verification is queued automatically.` });
       } else if (importFile) {
-        res = await api.upload(`/campaigns/${campaignId}/leads/import?skip_duplicates=${skipDuplicates}&verify_emails=${verifyEmails}`, importFile);
+        res = await api.upload(`/campaigns/${campaignId}/leads/import?skip_duplicates=${skipDuplicates}`, importFile);
         const dupMsg = res.duplicate_leads?.length ? `, ${res.duplicate_leads.length} duplicate(s) skipped` : '';
-        notify({ type: 'success', message: `Imported: ${res.added} added, ${res.already_enrolled} already enrolled, ${res.errors} errors${dupMsg}` });
+        notify({ type: 'success', message: `Imported: ${res.added} added, ${res.already_enrolled} already enrolled, ${res.errors} errors${dupMsg}. Email verification is queued automatically.` });
       }
       setShowLeadsConfirm(false);
       setConfirmPreview(null);
@@ -733,6 +742,7 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
       setImportFile(null);
       setLastDuplicates(res?.duplicate_leads || []);
       refresh();
+      loadVerificationSummary();
     } catch (err) {
       notify({ type: 'error', message: err.message });
     } finally {
@@ -867,17 +877,7 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
           />
           Skip duplicates (checks all campaigns)
         </label>
-        {emailVerifEnabled && (
-          <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none mb-4">
-            <input
-              type="checkbox"
-              checked={verifyEmails}
-              onChange={e => setVerifyEmails(e.target.checked)}
-              className="rounded"
-            />
-            Verify emails after adding
-          </label>
-        )}
+        <p className="mb-4 text-xs text-gray-600">New leads are checked automatically before sending. Verification status appears in the lead table.</p>
         {msg && <div className={`mb-2 text-sm ${msg.type==='error'?'text-red-600':'text-green-600'}`}>{msg.text}</div>}
         {mode === 'single' && (
           <form onSubmit={addSingle} className="space-y-3">
@@ -1035,8 +1035,11 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
           <table className="min-w-max w-full text-sm bg-white">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="px-4 py-3 text-left font-semibold text-gray-600">#</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Email</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600">Name</th>
+                <th className="px-4 py-3 text-left font-semibold text-gray-600">Job title</th>
+                <th className="px-4 py-3 text-left font-semibold text-gray-600">Company</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600">Status</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600">Stage</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Inbox</th>
@@ -1050,25 +1053,31 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
               </tr>
             </thead>
             <tbody>
-              {filteredLeads.map(l => (
+              {filteredLeads.map((l, index) => (
                 <tr key={l.lead_id} className="border-b border-gray-100 hover:bg-gray-50/60 transition-colors">
+                  <td className="px-4 py-2.5 text-gray-400">{index + 1}</td>
                   {/* email */}
                   <td className="px-4 py-2.5">
                     <button
                       className="font-mono text-teal-600 hover:underline text-left"
-                      onClick={() => onViewQueue?.(l.email)}
-                      title="View queue for this lead"
+                      onClick={() => setDetailLeadId(l.lead_id)}
+                      title="Open lead details"
                     >
                       {l.email}
                     </button>
+                    <div><button type="button" className="mt-1 text-xs text-gray-500 underline hover:text-teal-700" onClick={() => onViewQueue?.(l.email)}>View queue</button></div>
                   </td>
                   {/* name */}
                   <td className="px-4 py-2.5 text-gray-700"><LeadName name={l.name} linkedinUrl={l.linkedin_url} fallback={<span className="text-gray-300">—</span>} /></td>
+                  <td className="px-4 py-2.5 text-gray-700">{l.job_title || '—'}</td>
+                  <td className="px-4 py-2.5 text-gray-700">{l.company || '—'}</td>
                   {/* status badges */}
                   <td className="px-4 py-2.5">
                     <div className="flex flex-wrap gap-1">
                       {deriveStatuses(l).map(s => <StatusBadge key={s} label={s} />)}
                     </div>
+                    {l.verification_error && <p className="mt-1 max-w-xs text-xs text-red-700" role="status">Verification error: {l.verification_error}</p>}
+                    <RetryLeadVerification leadId={l.lead_id} status={l.email_verification_status} onDone={refresh} />
                   </td>
                   {/* stage */}
                   <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">{l.stage || '—'}</td>
@@ -1190,6 +1199,8 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
           </table>
         </div>
       )}
+
+      {detailLeadId != null && <LeadDetailsPanel leadId={detailLeadId} campaignId={campaignId} onClose={() => setDetailLeadId(null)} onSaved={refresh} />}
 
       {/* Confirm leads modal */}
       {showLeadsConfirm && confirmPreview && (

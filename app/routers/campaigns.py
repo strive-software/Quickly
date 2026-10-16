@@ -4,6 +4,7 @@
 # // must also be reflected in the Beacon service (/beacon or the separate Beacon repo).
 # // If you are an AI agent, add a TODO at the end of your response listing what needs to be updated in Beacon.
 
+import asyncio
 import csv
 import io
 import json
@@ -12,9 +13,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFi
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
-from datetime import date
+from datetime import date, datetime
 from typing import List
 
 from app.database import get_db
@@ -31,6 +33,7 @@ from app.models import (
     CampaignInbox,
     LeadReply,
     CustomEmailOverride,
+    PersonalizedEmailDraft,
     ManualStepRecord,
 )
 from app.campaign_lead_status import (
@@ -55,9 +58,12 @@ from app.schemas import (
     SequenceVariantUpdate,
     SequenceVariantResponse,
     CustomEmailWrite,
+    CustomEmailDraftWrite,
+    DraftReleaseRequest,
 )
+from app.crm_revisions import require_revision, revision
 from app.lead_inbox_resolution import from_inbox_email_by_lead_campaign
-from app.routers.leads import _fetch_lead_interactions_batch
+from app.routers.leads import _fetch_lead_interactions_batch, _verification_error
 from app.queue_logic import reserve_slots_for_new_leads_bulk
 
 log = logging.getLogger("quickly.routes")
@@ -70,12 +76,18 @@ def _apply_campaign_lead_add_options(cl: CampaignLead, lead: Lead, entry: Campai
         cl.enrollment_status = normalize_enrollment_status(entry.status)
     if entry.interest is not None:
         cl.interest_status = normalize_interest(entry.interest)
-    if entry.email_verification_status is not None:
-        raw = (entry.email_verification_status or "").strip().lower()
-        if raw in ("", "null", "none"):
-            lead.email_verification_status = None
-        elif raw in ("valid", "invalid", "pending"):
-            lead.email_verification_status = raw
+    # Verification is determined by the checker. Imported/API-supplied values
+    # must not make a new address eligible for sending before it is checked.
+
+
+def _mark_for_automatic_verification(lead: Lead, *, newly_created: bool) -> bool:
+    """Check new addresses; preserve all existing verdicts and live enrollments."""
+    from app.email_verification import PENDING
+    if not newly_created:
+        return False
+    lead.email_verification_status = PENDING
+    lead.email_verification_result = None
+    return True
 
 
 def _campaign_to_response(
@@ -1178,6 +1190,8 @@ async def list_campaign_leads(campaign_id: int, db: AsyncSession = Depends(get_d
             "lead_id": lead.id,
             "email": lead.email,
             "name": lead.name,
+            "job_title": lead.job_title or "",
+            "company": lead.company or "",
             "linkedin_url": lead.linkedin_url or "",
             "status": getattr(cl, "enrollment_status", None) or "active",
             "interest": cl.interest_status,
@@ -1189,6 +1203,7 @@ async def list_campaign_leads(campaign_id: int, db: AsyncSession = Depends(get_d
             "replied": lead.id in replied_set,
             "sending_paused": cl.sending_paused,
             "email_verification_status": lead.email_verification_status,
+            "verification_error": _verification_error(lead),
             "provider": lead.provider,
             "from_inbox_email": inbox_by_lead.get((lead.id, campaign_id)),
             "interactions": interactions_map.get(lead.id, []),
@@ -1431,6 +1446,81 @@ async def reconcile_personalized_endpoint(
     return await reconcile_personalized_status(db, campaign_id, background_tasks)
 
 
+async def _draft_target(db: AsyncSession, campaign_id: int, lead_id: int, sequence_id: int):
+    sequence = await db.scalar(select(Sequence).where(Sequence.id == sequence_id, Sequence.campaign_id == campaign_id))
+    if sequence is None or sequence.sequence_type != "personalized":
+        raise HTTPException(404, "Personalized sequence not found in this campaign")
+    enrollment = await db.scalar(select(CampaignLead).where(CampaignLead.campaign_id == campaign_id, CampaignLead.lead_id == lead_id))
+    if enrollment is None:
+        raise HTTPException(404, "Lead not enrolled in this campaign")
+    if enrollment.enrollment_status in ("completed", "bounced", "unsubscribed", "wrong_person"):
+        raise HTTPException(400, "Enrollment cannot send more emails")
+    sent = await db.scalar(select(EmailLog.id).where(EmailLog.campaign_id == campaign_id, EmailLog.lead_id == lead_id, EmailLog.sequence_index == sequence.position).limit(1))
+    if sent is not None:
+        raise HTTPException(409, "This step has already been sent")
+    return enrollment
+
+
+def _custom_subject(value: str | None) -> str | None:
+    # This text is a preview placeholder, never a literal thread reply subject.
+    return None if value == "(reply in thread)" else value
+
+
+@router.patch("/{campaign_id}/leads/{lead_id}/custom-email/{sequence_id}/draft")
+async def save_custom_email_draft(
+    campaign_id: int, lead_id: int, sequence_id: int,
+    payload: CustomEmailDraftWrite, db: AsyncSession = Depends(get_db),
+):
+    """Save unpublished copy without changing the sendable override or queue."""
+    enrollment = await _draft_target(db, campaign_id, lead_id, sequence_id)
+    draft = await db.scalar(select(PersonalizedEmailDraft).where(
+        PersonalizedEmailDraft.campaign_lead_id == enrollment.id,
+        PersonalizedEmailDraft.sequence_id == sequence_id,
+    ).with_for_update())
+    require_revision(draft.updated_at if draft else None, payload.expected_updated_at)
+    if draft is None:
+        draft = PersonalizedEmailDraft(campaign_lead_id=enrollment.id, sequence_id=sequence_id)
+        db.add(draft)
+    draft.subject = _custom_subject(payload.subject)
+    draft.body = payload.body
+    draft.is_html = payload.is_html
+    draft.updated_at = datetime.utcnow()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Draft was created concurrently; reload before saving") from None
+    return {"ok": True, "sequence_id": sequence_id, "lead_id": lead_id,
+            "draft": {"subject": draft.subject, "body": draft.body, "is_html": draft.is_html,
+                      "updated_at": revision(draft.updated_at)}}
+
+
+@router.post("/{campaign_id}/leads/{lead_id}/custom-email/{sequence_id}/release")
+async def release_custom_email_draft(
+    campaign_id: int, lead_id: int, sequence_id: int,
+    payload: DraftReleaseRequest,
+    background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db),
+):
+    """Promote a saved draft into the sendable personalized override."""
+    enrollment = await _draft_target(db, campaign_id, lead_id, sequence_id)
+    draft = await db.scalar(select(PersonalizedEmailDraft).where(
+        PersonalizedEmailDraft.campaign_lead_id == enrollment.id,
+        PersonalizedEmailDraft.sequence_id == sequence_id,
+    ).with_for_update())
+    if draft is None:
+        raise HTTPException(404, "No draft saved for this step")
+    require_revision(draft.updated_at, payload.expected_updated_at)
+    if not (draft.body or "").strip():
+        raise HTTPException(400, "Draft body is required before release")
+    result = await _write_custom_email_impl(campaign_id, lead_id, sequence_id,
+                                            CustomEmailWrite(subject=draft.subject, body=draft.body, is_html=draft.is_html),
+                                            background_tasks, db, commit_on_transition=False,
+                                            invalidate_draft=False)
+    await db.delete(draft)
+    await db.commit()
+    return result
+
+
 @router.patch("/{campaign_id}/leads/{lead_id}/custom-email/{sequence_id}")
 async def write_custom_email(
     campaign_id: int,
@@ -1439,6 +1529,16 @@ async def write_custom_email(
     payload: CustomEmailWrite,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+):
+    return await _write_custom_email_impl(campaign_id, lead_id, sequence_id, payload,
+                                          background_tasks, db, commit_on_transition=True,
+                                          invalidate_draft=True)
+
+
+async def _write_custom_email_impl(
+    campaign_id: int, lead_id: int, sequence_id: int,
+    payload: CustomEmailWrite, background_tasks: BackgroundTasks, db: AsyncSession,
+    *, commit_on_transition: bool, invalidate_draft: bool,
 ):
     """Write (or update) a custom email for a lead on a personalized sequence step.
 
@@ -1478,6 +1578,14 @@ async def write_custom_email(
     if cl.enrollment_status in ("completed", "bounced", "unsubscribed", "wrong_person"):
         raise HTTPException(400, f"Lead enrollment status is '{cl.enrollment_status}' — custom emails are not needed for terminal statuses")
 
+    if invalidate_draft:
+        stale_draft = await db.scalar(select(PersonalizedEmailDraft).where(
+            PersonalizedEmailDraft.campaign_lead_id == cl.id,
+            PersonalizedEmailDraft.sequence_id == sequence_id,
+        ).with_for_update())
+        if stale_draft is not None:
+            await db.delete(stale_draft)
+
     # Upsert the custom email override
     ov_result = await db.execute(
         select(CustomEmailOverride).where(
@@ -1487,14 +1595,14 @@ async def write_custom_email(
     )
     override = ov_result.scalar_one_or_none()
     if override:
-        override.subject = payload.subject
+        override.subject = _custom_subject(payload.subject)
         override.body = payload.body
         override.is_html = payload.is_html
     else:
         override = CustomEmailOverride(
             campaign_lead_id=cl.id,
             sequence_id=sequence_id,
-            subject=payload.subject,
+            subject=_custom_subject(payload.subject),
             body=payload.body,
             is_html=payload.is_html,
         )
@@ -1532,7 +1640,8 @@ async def write_custom_email(
             cl.enrollment_status = "active"
             lead_transitioned = True
             await db.flush()
-            await db.commit()
+            if commit_on_transition:
+                await db.commit()
             from app.routers.schedule import enqueue_global_recalculate
             enqueue_global_recalculate(background_tasks)
             log.info(
@@ -1544,7 +1653,8 @@ async def write_custom_email(
         cl.enrollment_status = "active"
         lead_transitioned = True
         await db.flush()
-        await db.commit()
+        if commit_on_transition:
+            await db.commit()
         from app.routers.schedule import enqueue_global_recalculate
         enqueue_global_recalculate(background_tasks)
         log.info(
@@ -1553,7 +1663,8 @@ async def write_custom_email(
         )
     elif campaign_mode == "asap":
         # Already active — still trigger recalc so the newly-written email gets scheduled
-        await db.commit()
+        if commit_on_transition:
+            await db.commit()
         from app.routers.schedule import enqueue_global_recalculate
         enqueue_global_recalculate(background_tasks)
         log.info(
@@ -2030,6 +2141,7 @@ async def bulk_add_leads_to_campaign(
     skip_duplicates: bool = True,
     verify_emails: bool = False,
     confirm_only: bool = False,
+    background_tasks: BackgroundTasks = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -2107,6 +2219,7 @@ async def bulk_add_leads_to_campaign(
     duplicate_leads: list[str] = []
     # Track new enrollments for bulk scheduling after provider detection
     new_enrollments: list[tuple[int, int, str, bool, bool]] = []  # cl.id, lead.id, email, has_prov, can_send
+    verification_ids: list[int] = []
 
     for entry in leads_data:
         email = entry.email.strip().lower()
@@ -2119,6 +2232,7 @@ async def bulk_add_leads_to_campaign(
             # Find or create lead by email
             lead_result = await db.execute(select(Lead).where(Lead.email == email))
             lead = lead_result.scalar_one_or_none()
+            newly_created = lead is None
             if not lead:
                 lead = Lead(
                     email=email,
@@ -2174,13 +2288,16 @@ async def bulk_add_leads_to_campaign(
             db.add(cl)
             await db.flush()
             _apply_campaign_lead_add_options(cl, lead, entry)
+            if _mark_for_automatic_verification(lead, newly_created=newly_created):
+                verification_ids.append(lead.id)
             campaign_mode = getattr(campaign_obj, 'custom_sequence_mode', 'wait_for_all')
             if has_personalized and (cl.enrollment_status or "active") == "active" and campaign_mode != "asap":
                 cl.enrollment_status = "needs_custom_email"
             await db.flush()
             can_send = campaign_lead_may_receive_sends(cl, lead)
             new_enrollments.append((cl.id, lead.id, email, bool(lead.provider), can_send))
-            results.append({"email": email, "status": "added", "lead_id": lead.id, "slots_created": 0})
+            results.append({"email": email, "status": "added", "lead_id": lead.id,
+                            "verification_status": lead.email_verification_status, "slots_created": 0})
             added += 1
 
         except Exception as exc:
@@ -2224,21 +2341,9 @@ async def bulk_add_leads_to_campaign(
             if needs_detection:
                 await db.flush()
 
-        # When email verification is requested, mark all newly added leads as
-        # "pending" and defer scheduling until _run_background_verification
-        # resolves them in batch (only valid leads get slots).
-        added_lead_ids = [e[1] for e in new_enrollments]
-        if verify_emails and added_lead_ids:
-            from app.email_verification import PENDING as _VER_PENDING
-            _pend_res = await db.execute(select(Lead).where(Lead.id.in_(added_lead_ids)))
-            for _pl in _pend_res.scalars().all():
-                _pl.email_verification_status = _VER_PENDING
-            await db.flush()
-            to_schedule_cl_ids: list[int] = []
-        else:
-            to_schedule_cl_ids = [
-                e[0] for e in new_enrollments if e[4] and e[1] not in replied_lead_ids
-            ]
+        to_schedule_cl_ids = [
+            e[0] for e in new_enrollments if e[4] and e[1] not in replied_lead_ids
+        ]
 
         if to_schedule_cl_ids:
             await reserve_slots_for_new_leads_bulk(db, to_schedule_cl_ids, campaign_id)
@@ -2262,13 +2367,10 @@ async def bulk_add_leads_to_campaign(
                         r["lead_id"], campaign_id, r["slots_created"],
                     )
 
-    else:
-        added_lead_ids = []
-
-    # Trigger background email verification if requested
-    if verify_emails and added_lead_ids:
-        import asyncio
-        asyncio.create_task(_run_background_verification(added_lead_ids))
+    # Commit the pending state and enrollments before a worker opens another session.
+    await db.commit()
+    if verification_ids and background_tasks is not None:
+        background_tasks.add_task(_run_background_verification, verification_ids)
 
     # When provider matching is disabled, still detect providers in the background
     # for leads that don't have one yet (future use / analytics).
@@ -2286,7 +2388,8 @@ async def bulk_add_leads_to_campaign(
         "duplicates_in_batch": duplicates_in_batch,
         "errors": errors,
         "results": results,
-        "verification_queued": verify_emails and bool(added_lead_ids),
+        "verification_queued": bool(verification_ids),
+        "verification_pending": len(verification_ids),
     }
 
 
@@ -2313,7 +2416,17 @@ async def _detect_providers_background(lead_email_pairs: list[tuple[int, str]]) 
         await db.commit()
 
 
+_verification_lock = asyncio.Lock()
+_verification_last_check_at: float | None = None
+
+
 async def _run_background_verification(lead_ids: list[int], *, reverify: bool = False):
+    """Serialize checker traffic and skip IDs resolved by an earlier worker."""
+    async with _verification_lock:
+        await _run_background_verification_locked(lead_ids, reverify=reverify)
+
+
+async def _run_background_verification_locked(lead_ids: list[int], *, reverify: bool = False):
     """Verify emails for the given lead IDs in the background.
 
     When *reverify* is True, leads that already have a verification status are
@@ -2337,8 +2450,26 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
     )
     from app.email_verification import verify_single, BLOCK_SEND_STATUSES, PENDING, CustomHttpProvider
     import json
+    global _verification_last_check_at
 
     _FLUSH_INTERVAL = 60  # seconds between rolling schedule flushes
+
+    async def _fail_pending(db, message: str) -> None:
+        # Fixed operator-facing messages; never persist provider keys or raw URLs.
+        rows = await db.execute(select(Lead).where(
+            Lead.id.in_(lead_ids), Lead.email_verification_status == PENDING))
+        for lead in rows.scalars().all():
+            lead.email_verification_status = "verification_error"
+            lead.email_verification_result = {"error": message}
+        await db.commit()
+
+    def _provider_failed(result) -> bool:
+        if result.status != "unknown":
+            return False
+        message = (result.message or "").lower()
+        return message.startswith(("http ", "request error", "unexpected error",
+                                   "response was not valid json", "invalid url template",
+                                   "all retries exhausted"))
 
     async def _flush_valid(valid_ids: list[int], flush_db) -> None:
         """Schedule a batch of newly-verified valid leads (grouped by campaign)."""
@@ -2363,7 +2494,7 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
         try:
             enabled = (await get_setting(db, EMAIL_VERIFICATION_ENABLED) or "false").lower() in ("true", "1", "yes")
             if not enabled:
-                log.info("Email verification disabled, skipping background verification")
+                await _fail_pending(db, "Email verification is not enabled")
                 return
             provider_name = await get_setting(db, EMAIL_VERIFICATION_PROVIDER) or "mailtester_ninja"
 
@@ -2376,6 +2507,7 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
                 custom_method = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_METHOD) or "GET"
                 if not custom_url or "{email}" not in custom_url:
                     log.warning("Custom email verification provider has no valid URL template configured")
+                    await _fail_pending(db, "Custom verification provider is not configured")
                     return
                 _cp = CustomHttpProvider(custom_url, custom_field, valid_vals, invalid_vals, custom_method)
                 async def _do_verify(email: str) -> "VerificationResult":  # type: ignore[name-defined]  # noqa: E731
@@ -2384,6 +2516,7 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
                 api_key = await get_setting(db, EMAIL_VERIFICATION_API_KEY) or ""
                 if not api_key:
                     log.warning("Email verification enabled but no API key configured")
+                    await _fail_pending(db, "Email verification API key is not configured")
                     return
                 async def _do_verify(email: str) -> "VerificationResult":  # type: ignore[name-defined]  # noqa: E731
                     return await verify_single(email, api_key, provider_name)
@@ -2391,11 +2524,8 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
             # Mark leads as pending (skip if we are only re-verifying – they may
             # already have a status we want to compare against)
             result = await db.execute(select(Lead).where(Lead.id.in_(lead_ids)))
-            leads = result.scalars().all()
-            if not reverify:
-                for lead in leads:
-                    lead.email_verification_status = PENDING
-                await db.commit()
+            leads = [lead for lead in result.scalars().all()
+                     if reverify or lead.email_verification_status == PENDING]
 
             # Rolling buffer: accumulated valid lead IDs waiting to be scheduled.
             # We flush every _FLUSH_INTERVAL seconds so early-verified leads are
@@ -2408,13 +2538,17 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
                     old_verif = lead.email_verification_status
                     old_status = lead.status
 
+                    if _verification_last_check_at is not None:
+                        await _asyncio.sleep(max(0, 1.0 - (_asyncio.get_event_loop().time() - _verification_last_check_at)))
+                    _verification_last_check_at = _asyncio.get_event_loop().time()
+
                     vr = await _do_verify(lead.email)
 
                     # Re-fetch to avoid stale state from other writers
                     result = await db.execute(select(Lead).where(Lead.id == lead.id))
                     fresh_lead = result.scalar_one_or_none()
                     if fresh_lead:
-                        new_verif = vr.status
+                        new_verif = "verification_error" if _provider_failed(vr) else vr.status
                         new_status = fresh_lead.status  # may change below
 
                         # In reverify mode skip update when nothing changed
@@ -2427,9 +2561,11 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
                             continue
 
                         fresh_lead.email_verification_status = new_verif
-                        fresh_lead.email_verification_result = vr.raw
+                        fresh_lead.email_verification_result = (
+                            {"error": "Email verification provider could not complete the check"}
+                            if new_verif == "verification_error" else vr.raw)
 
-                        if new_verif in BLOCK_SEND_STATUSES:
+                        if new_verif in BLOCK_SEND_STATUSES or new_verif == "verification_error":
                             new_status = fresh_lead.status
                             # Remove any existing queue slots
                             cl_result = await db.execute(
@@ -2465,6 +2601,11 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
                     log.info("Verified lead %s (%s): %s - %s", lead.id, lead.email, vr.status, vr.message)
                 except Exception as exc:
                     log.exception("Failed to verify lead %s (%s): %s", lead.id, lead.email, exc)
+                    failed = await db.scalar(select(Lead).where(Lead.id == lead.id))
+                    if failed and failed.email_verification_status == PENDING:
+                        failed.email_verification_status = "verification_error"
+                        failed.email_verification_result = {"error": "Email verification failed"}
+                        await db.commit()
 
                 # Rolling flush: schedule accumulated valid leads every minute
                 now = _asyncio.get_event_loop().time()
@@ -2479,6 +2620,8 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
 
         except Exception as exc:
             log.exception("Background verification failed: %s", exc)
+            await db.rollback()
+            await _fail_pending(db, "Email verification failed")
             # Record failure for health monitoring and fire alert event
             try:
                 from app.app_settings import put_setting
@@ -2500,12 +2643,13 @@ async def _run_background_verification(lead_ids: list[int], *, reverify: bool = 
 @router.post("/{campaign_id}/leads/verify")
 async def trigger_verification_for_campaign(
     campaign_id: int,
+    background_tasks: BackgroundTasks = None,
     reverify: bool = Query(False, description="Re-verify already-verified leads"),
     db: AsyncSession = Depends(get_db),
 ):
     """Trigger email verification for leads in a campaign.
 
-    By default only leads with no verification status are queued.  Pass
+    By default only leads with no status or a failed/pending check are queued. Pass
     ``?reverify=true`` to re-check leads that were already verified.
     The response always includes a ``needs_reverify`` boolean so the UI
     can prompt the user when there is nothing new to verify but verified
@@ -2535,13 +2679,14 @@ async def trigger_verification_for_campaign(
             .where(CampaignLead.campaign_id == campaign_id)
         )
     else:
-        # Normal mode: only leads with no status yet
+        # Normal mode: unverified, failed and stranded pending leads only.
         result = await db.execute(
             select(Lead.id)
             .join(CampaignLead, CampaignLead.lead_id == Lead.id)
             .where(
                 CampaignLead.campaign_id == campaign_id,
-                Lead.email_verification_status.is_(None),
+                or_(Lead.email_verification_status.is_(None),
+                    Lead.email_verification_status.in_(("verification_error", "pending"))),
             )
         )
     lead_ids = [r[0] for r in result.all()]
@@ -2555,8 +2700,14 @@ async def trigger_verification_for_campaign(
             "total_verified": total_verified,
         }
 
-    import asyncio
-    asyncio.create_task(_run_background_verification(lead_ids, reverify=reverify))
+    if not reverify:
+        selected = await db.execute(select(Lead).where(Lead.id.in_(lead_ids)))
+        for lead in selected.scalars().all():
+            lead.email_verification_status = "pending"
+            lead.email_verification_result = None
+    await db.commit()
+    if background_tasks is not None:
+        background_tasks.add_task(_run_background_verification, lead_ids, reverify=reverify)
     return {"ok": True, "queued": len(lead_ids), "needs_reverify": False, "total_verified": total_verified}
 
 
@@ -2711,6 +2862,7 @@ async def import_campaign_leads(
     skip_duplicates: bool = True,
     verify_emails: bool = False,
     confirm_only: bool = False,
+    background_tasks: BackgroundTasks = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Import leads from a CSV file. Expects columns: email, name, and any custom fields."""
@@ -2810,6 +2962,7 @@ async def import_campaign_leads(
     seen_emails: set[str] = set()
     # Track new enrollments for bulk scheduling after provider detection
     new_enrollments: list[tuple[int, int, str, bool, bool]] = []  # cl.id, lead.id, email, has_prov, can_send
+    verification_ids_csv: list[int] = []
 
     for row_num, row in enumerate(reader, start=2):
         by_header = {}
@@ -2859,6 +3012,7 @@ async def import_campaign_leads(
                                      if _csv_cell(f"lead_{key}") is not None})
             lead_result = await db.execute(select(Lead).where(Lead.email == email))
             lead = lead_result.scalar_one_or_none()
+            newly_created = lead is None
             if not lead:
                 lead = Lead(email=email, name=name, custom_data=custom_data, **profile.model_dump())
                 db.add(lead)
@@ -2915,6 +3069,8 @@ async def import_campaign_leads(
                 email_verification_status=_csv_cell("email_verification_status"),
             )
             _apply_campaign_lead_add_options(cl, lead, _row_opts)
+            if _mark_for_automatic_verification(lead, newly_created=newly_created):
+                verification_ids_csv.append(lead.id)
             campaign_mode = getattr(campaign_obj, 'custom_sequence_mode', 'wait_for_all')
             if has_personalized_import and (cl.enrollment_status or "active") == "active" and campaign_mode != "asap":
                 cl.enrollment_status = "needs_custom_email"
@@ -2922,7 +3078,8 @@ async def import_campaign_leads(
             can_send_csv = campaign_lead_may_receive_sends(cl, lead)
             new_enrollments.append((cl.id, lead.id, email, bool(lead.provider), can_send_csv))
             added += 1
-            results_list.append({"row": row_num, "email": email, "status": "added", "lead_id": lead.id})
+            results_list.append({"row": row_num, "email": email, "status": "added", "lead_id": lead.id,
+                                 "verification_status": lead.email_verification_status})
         except Exception as exc:
             log.exception("import_leads: error on row %d email=%s: %s", row_num, email, exc)
             results_list.append({"row": row_num, "email": email, "status": "error", "detail": str(exc)})
@@ -2965,26 +3122,16 @@ async def import_campaign_leads(
             if needs_detection:
                 await db.flush()
 
-        added_lead_ids_csv = [e[1] for e in new_enrollments]
-        if verify_emails and added_lead_ids_csv:
-            from app.email_verification import PENDING as _VER_PENDING_CSV
-            _pend_res2 = await db.execute(select(Lead).where(Lead.id.in_(added_lead_ids_csv)))
-            for _pl2 in _pend_res2.scalars().all():
-                _pl2.email_verification_status = _VER_PENDING_CSV
-            await db.flush()
-            to_schedule_cl_ids_csv: list[int] = []
-        else:
-            to_schedule_cl_ids_csv = [
-                e[0] for e in new_enrollments if e[4] and e[1] not in replied_lead_ids_csv
-            ]
+        to_schedule_cl_ids_csv = [
+            e[0] for e in new_enrollments if e[4] and e[1] not in replied_lead_ids_csv
+        ]
 
         if to_schedule_cl_ids_csv:
             await reserve_slots_for_new_leads_bulk(db, to_schedule_cl_ids_csv, campaign_id)
 
-    # Trigger background email verification if requested
-    if verify_emails and added_lead_ids_csv:
-        import asyncio
-        asyncio.create_task(_run_background_verification(added_lead_ids_csv))
+    await db.commit()
+    if verification_ids_csv and background_tasks is not None:
+        background_tasks.add_task(_run_background_verification, verification_ids_csv)
 
     # When provider matching is disabled, still detect providers in the background
     # for leads that don't have one yet (future use / analytics).
@@ -3002,7 +3149,8 @@ async def import_campaign_leads(
         "duplicates_in_batch": duplicates_in_batch,
         "errors": errors,
         "total_rows": added + already_enrolled + duplicates_in_batch + errors,
-        "verification_queued": verify_emails and bool(added_lead_ids_csv),
+        "verification_queued": bool(verification_ids_csv),
+        "verification_pending": len(verification_ids_csv),
     }
 
 

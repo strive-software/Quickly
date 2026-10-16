@@ -862,6 +862,10 @@ Use **Quickly Beacon** when you want open, click, and unsubscribe links to use *
 
 **How it works:** Beacon is a small tracking proxy. It serves pixels and redirects on the domain you choose, then posts signed events back to Quickly. Your main app URL stays on Railway, VPS Compose, etc.
 
+**Unsubscribe safety:** A Beacon `GET` or `HEAD /u/{token}` must only display a confirmation form; neither request may emit a confirmed unsubscribe. Beacon must accept `POST /u/{token}` only when the form contains exactly `confirm=unsubscribe` or `List-Unsubscribe=One-Click` (the latter is RFC 8058). Its signed ingest event must include `request_method: "POST"`, `unsubscribe_action: "browser_confirmation"` or `"rfc8058_one_click"`, and may include `ip_address` and `user_agent`. A signed legacy Beacon event without proof of confirmation is recorded for operator review and pauses that campaign enrollment. It does not mark the lead unsubscribed. Update Beacon and Quickly together to make existing custom-host links complete automatically.
+
+For Beacon-connected inboxes, new mail uses Quickly's configured public HTTPS `BASE_URL` for both the unsubscribe link in the body and the `List-Unsubscribe` header. Legacy CNAME inboxes continue to use their tracking domain, which routes directly to Quickly. The public reverse proxy must forward `/u/{token}` GET, HEAD, and POST to Quickly. The sender refuses a nonpublic or non-HTTPS unsubscribe URL in production; local development can explicitly set `QUICKLY_ALLOW_LOCAL_UNSUBSCRIBE_URL=1`. Existing mail with Beacon-hosted unsubscribe links still needs the Beacon update above; changing newly generated links cannot repair those messages.
+
 **Typical setup**
 
 1. **Run Beacon** so it is reachable on the HTTPS origin you want for tracking (for example a small VM, Railway service, or a `reverse_proxy` on host Caddy to `127.0.0.1:8090`).

@@ -488,7 +488,8 @@ List leads with optional filters. Each item includes enrollments and verificatio
 | `email_verification_status` | Typically `valid`, `invalid`, `pending`, or `null` (other provider values may appear) |
 | `created_at` | Creation timestamp |
 | `campaigns` | Per enrollment: `campaign_id`, `campaign_public_id`, `campaign_name`, `enrolled_at`, **`status`** (enrollment), **`interest`** (reply intent), **`opened`**, **`clicked`**, **`replied`** (booleans for that campaign), `sending_paused` |
-| `interactions` | On **`GET /api/leads/{id}`** only: merged timeline of outbound sends and inbound mirrored messages / reply markers (see below). Empty on list. |
+| `verification_error` | Safe checker error text when `email_verification_status` is `verification_error`; otherwise `null`. |
+| `interactions` | Timeline of outbound sends, inbound messages, replies and confirmed unsubscribe events (including `mechanism` and `request_method`). |
 
 #### `GET /api/leads/export`
 
@@ -573,7 +574,7 @@ Same recovery rules as **`bulk-recover`**, but input is a **multipart** CSV uplo
 
 #### `POST /api/leads`
 
-Returns **`405`** — standalone lead creation is not allowed. Use **`POST /api/campaigns/{id}/leads`**.
+Create one lead and enroll it in a campaign. Body: `{"campaign_id": 1, "email": "alice@example.com", "name": "Alice"}` plus optional profile fields and `custom_data`. A newly created address enters `pending` verification and is not scheduled until the checker resolves it. Existing lead profiles and verification status are preserved when enrolling in another campaign. Returns the lead profile; returns **409** if already enrolled in that campaign.
 
 #### `POST /api/leads/mark-replied`
 
@@ -585,7 +586,29 @@ Mark a lead as having replied to a specific campaign (stop-on-reply bookkeeping)
 
 #### `GET /api/leads/{id}`
 
-Get one lead with full **`campaigns`** array (same shape as list) plus **`interactions`**: chronologically sorted events with `direction` (`outbound` \| `inbound`), `kind` (`sent` \| `received` \| `reply_marker`), `at` (ISO time), and campaign / subject / snippet fields when available.
+Get one lead with full **`campaigns`** array (same shape as list) plus **`interactions`**: chronologically sorted events with `direction` (`outbound` \| `inbound`), `kind` (`sent` \| `received` \| `reply_marker` \| `unsubscribed`), `at` (ISO time), and campaign / subject / snippet fields when available. An `unsubscribed` event includes the confirmed `mechanism`, `request_method`, IP and user agent.
+
+Legacy Beacon events without method/action proof appear as `kind: "unconfirmed_unsubscribe"` in `interactions`, with `request_id`, `request_count`, `last_seen_at`, `review_decision`, and `reviewed_at`. They pause the campaign enrollment pending human review; they do not unsubscribe it automatically. A later confirmed POST resolves the request with `review_decision: "confirmed"`.
+
+#### `POST /api/leads/{id}/unconfirmed-unsubscribes/{request_id}/review`
+
+Review one unconfirmed legacy Beacon request. Body: `{"decision":"accepted"}` or `{"decision":"rejected"}`. Acceptance records an unsubscribe with `mechanism: "operator_confirmation"` and removes queued mail. Rejection records the decision but leaves sending paused; resuming requires a separate action. Returns `{"ok":true,"request_id":7,"decision":"accepted","reviewed_at":"...Z"}`. A second review returns **409**.
+
+#### `GET /api/leads/{id}/research` and `PUT /api/leads/{id}/research`
+
+Research belongs to the lead and is shared by all campaign enrollments. GET returns `{"lead_id": 42, "summary": "...", "sources": [{"url": "https://...", "title": "...", "notes": "..."}], "updated_at": "2026-10-16T12:00:00Z"}`. `updated_at` is `null` before the first save. PUT accepts `summary`, `sources`, and required `expected_updated_at` (`null` on first save, then the last timestamp read). A stale timestamp returns **409**; reload and retry.
+
+#### `POST /api/leads/{id}/verify`
+
+Retry a lead whose verification status is `null`, `pending`, or `verification_error`. The endpoint marks it `pending` and queues the existing checker after commit. It does not recheck cached valid, catch-all, invalid or risky results; those return **409**. Response: `{"ok": true, "queued": 1, "verification_status": "pending"}`. If the checker is disabled or missing configuration, the lead becomes `verification_error` with a safe explanation and remains blocked from sending until verification is retried after configuration.
+
+#### `GET /api/leads/{id}/emails`
+
+Returns `{"items": [...]}` across all campaigns; optional `campaign_id` filters the list. Each item has `kind` (`sent` or `pending`), `status`, `status_reason`, readable `reason`, campaign and sequence IDs, subject, body, format, sender, recipient, and `sent_at` or `scheduled_at`. Sent content comes from the saved email log. Scheduled content uses the assigned slot and variant with lead variables rendered. Pending status distinguishes `scheduled`, `paused`, `blocked`, `manual_wait`, `needs_writing`, `draft`, and `awaiting_schedule`; a stale slot keeps its `scheduled_at` even when sending is paused or blocked. Personalized steps expose `editing_source` with raw subject, body and format (preserving template variables and null thread reply subject), a raw `draft`, and released `override` separately.
+
+#### Personalized email drafts
+
+`PATCH /api/campaigns/{campaign_id}/leads/{lead_id}/custom-email/{sequence_id}/draft` saves `{ "subject": "...", "body": "...", "is_html": false, "expected_updated_at": null }`. It does not change queued or sendable content. The response contains `draft.updated_at`; send that timestamp on the next save. `POST` to the same path ending in `/release` with `{ "expected_updated_at": "<draft.updated_at>" }` promotes the draft to the sendable override. Both return **409** for stale revisions. A sent or terminal step cannot be edited or released. The existing `PATCH .../custom-email/{sequence_id}` retains its immediate release behavior for legacy clients and invalidates any older draft.
 
 #### `PATCH /api/leads/{id}`
 
@@ -669,18 +692,18 @@ Bulk add leads to a campaign. Creates leads that don't exist yet and schedules q
 | Param | Default | Description |
 |---|---|---|
 | `skip_duplicates` | `true` | When `true`, leads enrolled in any campaign are skipped. When `false`, only leads already in *this* campaign are skipped. |
-| `verify_emails` | `false` | When `true` and email verification is configured, triggers background verification for newly added leads. |
+| `verify_emails` | — | Deprecated compatibility parameter; verification is automatic for new or unverified addresses. |
 
 **Body:** Array of lead objects:
 
 ```json
 [
   { "email": "alice@example.com", "name": "Alice", "custom_data": { "company": "Acme" } },
-  { "email": "bob@example.com", "name": "Bob", "status": "active", "interest": null, "email_verification_status": "valid" }
+  { "email": "bob@example.com", "name": "Bob", "status": "active", "interest": null }
 ]
 ```
 
-Optional per-row fields: **`status`** (enrollment: `active`, `contacted`, `completed`, `bounced`, `unsubscribed`, `wrong_person`), **`interest`** (`interested`, `not_interested`, `out_of_office`, `auto_reply`, or omitted), **`email_verification_status`** (`valid`, `invalid`, `pending`, or clear with empty / `null`). Rows that are not sendable (e.g. unsubscribed) do not receive queue slots.
+Optional per-row fields: **`status`** (enrollment: `active`, `contacted`, `completed`, `bounced`, `unsubscribed`, `wrong_person`) and **`interest`** (`interested`, `not_interested`, `out_of_office`, `auto_reply`, or omitted). Imported `email_verification_status` values are ignored: the checker owns that verdict. Newly created leads become pending before scheduling. Existing leads retain their status and live enrollments; use the explicit verify endpoint to check an existing unverified lead.
 
 **Response:**
 
@@ -692,9 +715,10 @@ Optional per-row fields: **`status`** (enrollment: `active`, `contacted`, `compl
   "duplicate_leads": [],
   "duplicates_in_batch": 0,
   "errors": 0,
-  "verification_queued": false,
+  "verification_queued": true,
+  "verification_pending": 2,
   "results": [
-    { "email": "alice@example.com", "status": "added", "lead_id": 42, "slots_created": 3 }
+    { "email": "alice@example.com", "status": "added", "lead_id": 42, "verification_status": "pending", "slots_created": 0 }
   ]
 }
 ```
@@ -766,9 +790,9 @@ Export the campaign's leads as a CSV file.
 
 ### `POST /api/campaigns/{id}/leads/import`
 
-Import leads from a CSV file. Expects an `email` column; `name` sets the lead name and extra columns become `custom_data`. Dedicated profile fields use reserved `lead_`-prefixed columns (listed under lead export). Unprefixed `job_title`, `notes`, `priority`, and similar columns continue to populate custom template fields. Reserved columns (not merged into `custom_data`): **`status`**, **`interest`**, **`email_verification_status`** (same semantics as bulk add).
+Import leads from a CSV file. Expects an `email` column; `name` sets the lead name and extra columns become `custom_data`. Dedicated profile fields use reserved `lead_`-prefixed columns (listed under lead export). Unprefixed `job_title`, `notes`, `priority`, and similar columns continue to populate custom template fields. Reserved columns (not merged into `custom_data`): **`status`**, **`interest`**, **`email_verification_status`** (ignored; checker-owned).
 
-**Query params:** `skip_duplicates` (default `true`), `verify_emails` (default `false`)
+**Query params:** `skip_duplicates` (default `true`); `verify_emails` is accepted for compatibility and ignored.
 
 **Form data:** `file` (multipart CSV upload)
 
@@ -1039,6 +1063,11 @@ Unauthenticated requests receive **401**. Tool execution forwards these headers 
 |------|--------|
 | `list_leads` | `GET /api/leads` (optional `q`, `status`, `bad_only`, `interest`; filters stack) |
 | `get_lead` | `GET /api/leads/{id}` |
+| `get_lead_research`, `save_lead_research` | Shared research GET/PUT, with `expected_updated_at` on save |
+| `get_lead_emails` | Sent details and pending steps for one lead, optional campaign filter |
+| `retry_lead_verification` | Retry a pending/failed/unverified address without rechecking cached valid leads |
+| `review_unconfirmed_unsubscribe` | Accept/reject a legacy request; rejection retains the sending pause |
+| `save_personalized_email_draft`, `release_personalized_email_draft` | Unpublished save and explicit release, both revision guarded |
 | `update_lead` | `PATCH /api/leads/{id}` |
 | `delete_lead` | `DELETE /api/leads/{id}` |
 | `add_campaign_leads` | `POST /api/campaigns/{campaign_id}/leads` |
@@ -1603,7 +1632,7 @@ Register the caller's IP as a non-permanent known IP (auto-expires after 7 days)
 
 ## Email Verification
 
-Email verification checks whether a lead's email address is deliverable before sending. When configured, invalid or risky addresses are automatically marked as bounced and their queue slots removed.
+Email verification checks newly created addresses before they are eligible for sending. They enter `pending`; existing leads keep their current verdict and live enrollments. Missing checker configuration or provider errors produce `verification_error` and a safe `verification_error` message on lead responses. Those addresses remain unscheduled until the checker is configured and `POST /api/leads/{id}/verify` retries them. Invalid and risky results remove queue slots.
 
 Supported providers: `mailtester_ninja` (requires API key) and `custom` (any HTTP endpoint).
 

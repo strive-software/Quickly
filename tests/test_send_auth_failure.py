@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import func, select
 
 import app.jobs as jobs_mod
-from app.models import EmailLog, QueueSlot, SmtpAccount
+from app.models import CampaignLead, EmailLog, QueueSlot, SmtpAccount
 from app.sender import SendFailure, SendResult
 from tests.conftest import (
     make_campaign,
@@ -36,6 +36,27 @@ class _SessionCtx:
 
     async def __aexit__(self, exc_type, exc, tb):
         return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job", ["batch", "slot"])
+async def test_paused_enrollment_preserves_queued_slot(session, monkeypatch, job):
+    from app import time as time_provider
+    inbox = await _make_smtp_inbox(session)
+    slot = await _make_due_slot(session, inbox)
+    slot.scheduled_date = time_provider.now() - timedelta(minutes=1)
+    cl = await session.scalar(select(CampaignLead).where(CampaignLead.id == slot.campaign_lead_id))
+    cl.sending_paused = True
+    await session.flush()
+
+    def unexpected_send(**kwargs):
+        raise AssertionError("Paused enrollment must not send")
+    monkeypatch.setattr("app.jobs.send_email", unexpected_send)
+    monkeypatch.setattr(jobs_mod, "AsyncSessionLocal", lambda: _SessionCtx(session))
+    await (jobs_mod.run_send_job() if job == "batch" else jobs_mod.send_slot_job(slot.id))
+
+    assert await session.scalar(select(QueueSlot.id).where(QueueSlot.id == slot.id)) == slot.id
+    assert await session.scalar(select(func.count(EmailLog.id))) == 0
 
 
 async def _make_smtp_inbox(session, email: str = "relay@example.com"):

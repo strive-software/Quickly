@@ -108,6 +108,82 @@ async def get_lead(ctx: Context, lead_id: int) -> str:
 
 
 @leads_mcp.tool()
+async def get_lead_research(ctx: Context, lead_id: int) -> str:
+    """Read lead research shared by every campaign: summary and source links."""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.get(f"{_api_base()}/api/leads/{lead_id}/research", headers=_outbound_headers(ctx))
+    return _json_response(r)
+
+
+@leads_mcp.tool()
+async def save_lead_research(ctx: Context, lead_id: int, summary: str,
+                             sources: list[dict[str, str]], expected_updated_at: str | None) -> str:
+    """Save shared research notes and source links for a lead."""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.put(f"{_api_base()}/api/leads/{lead_id}/research",
+                             headers=_outbound_headers(ctx), json={"summary": summary, "sources": sources,
+                                                                 "expected_updated_at": expected_updated_at})
+    return _json_response(r)
+
+
+@leads_mcp.tool()
+async def get_lead_emails(ctx: Context, lead_id: int, campaign_id: int | None = None) -> str:
+    """Read sent emails and pending email steps across campaigns, with rendered scheduled previews."""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.get(f"{_api_base()}/api/leads/{lead_id}/emails",
+                             headers=_outbound_headers(ctx),
+                             params={"campaign_id": campaign_id} if campaign_id is not None else None)
+    return _json_response(r)
+
+
+@leads_mcp.tool()
+async def retry_lead_verification(ctx: Context, lead_id: int) -> str:
+    """Retry a pending or failed email check for one lead without rechecking valid leads."""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(f"{_api_base()}/api/leads/{lead_id}/verify",
+                              headers=_outbound_headers(ctx))
+    return _json_response(r)
+
+
+@leads_mcp.tool()
+async def review_unconfirmed_unsubscribe(ctx: Context, lead_id: int, request_id: int,
+                                         decision: str) -> str:
+    """Accept or reject an unconfirmed legacy unsubscribe request; rejection keeps sending paused."""
+    if decision not in ("accepted", "rejected"):
+        return json.dumps({"error": "decision must be accepted or rejected"})
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{_api_base()}/api/leads/{lead_id}/unconfirmed-unsubscribes/{request_id}/review",
+            headers=_outbound_headers(ctx), json={"decision": decision})
+    return _json_response(r)
+
+
+@leads_mcp.tool()
+async def save_personalized_email_draft(ctx: Context, campaign_id: int, lead_id: int,
+                                        sequence_id: int, subject: str | None,
+                                        body: str | None, expected_updated_at: str | None,
+                                        is_html: bool | None = None) -> str:
+    """Save lead-specific email copy without making it eligible to send."""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.patch(
+            f"{_api_base()}/api/campaigns/{campaign_id}/leads/{lead_id}/custom-email/{sequence_id}/draft",
+            headers=_outbound_headers(ctx), json={"subject": subject, "body": body, "is_html": is_html,
+                                                  "expected_updated_at": expected_updated_at})
+    return _json_response(r)
+
+
+@leads_mcp.tool()
+async def release_personalized_email_draft(ctx: Context, campaign_id: int, lead_id: int,
+                                           sequence_id: int, expected_updated_at: str) -> str:
+    """Release a saved draft into the sendable personalized sequence."""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            f"{_api_base()}/api/campaigns/{campaign_id}/leads/{lead_id}/custom-email/{sequence_id}/release",
+            headers=_outbound_headers(ctx), json={"expected_updated_at": expected_updated_at})
+    return _json_response(r)
+
+
+@leads_mcp.tool()
 async def update_lead(
     ctx: Context,
     lead_id: int,

@@ -28,6 +28,7 @@ async def test_e2e_asap_mode_lead_active_and_queue_created(session):
     await make_campaign_inbox(session, campaign.id, inbox.id)
     seq = await make_sequence(session, campaign.id, position=0, body="Hi", sequence_type="personalized", fallback_subject="Hello", fallback_body="Hi there")
     lead = await make_lead(session, email="asap-lead@example.com")
+    lead.email_verification_status = "valid"  # cached check; enrollment need not reverify
     await session.commit()
 
     # 1. Verify campaign is ASAP
@@ -81,6 +82,7 @@ async def test_e2e_wait_for_all_blocks_until_all_written(session):
     await make_campaign_inbox(session, campaign.id, inbox.id)
     seq = await make_sequence(session, campaign.id, position=0, body="Hi", sequence_type="personalized", fallback_subject="Hello", fallback_body="Hi there")
     lead = await make_lead(session, email="wait-lead@example.com")
+    lead.email_verification_status = "valid"  # cached check; enrollment need not reverify
     await session.commit()
 
     # 1. Verify campaign is wait_for_all

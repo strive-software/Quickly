@@ -17,7 +17,7 @@ ENROLLMENT_STATUSES = frozenset(
 # Reply / intent classification (per CampaignLead). Unsubscribe & wrong person live in enrollment.
 LEAD_INTERESTS = frozenset({"interested", "not_interested", "out_of_office", "auto_reply"})
 
-VERIFICATION_BLOCKS_SEND = frozenset({"invalid", "risky", "pending"})
+VERIFICATION_BLOCKS_SEND = frozenset({"invalid", "risky", "pending", "verification_error"})
 
 
 def enrollment_blocks_sends(status: str | None) -> bool:

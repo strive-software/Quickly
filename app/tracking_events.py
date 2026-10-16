@@ -24,6 +24,8 @@ from app.models import (
     KnownIP,
     Lead,
     LeadUnsubscribeToken,
+    UnconfirmedUnsubscribeRequest,
+    UnsubscribeAudit,
     QueueSlot,
     TrackedLink,
 )
@@ -70,6 +72,14 @@ ALREADY_UNSUBSCRIBED_HTML = _UNSUBSCRIBE_HTML.replace(
 )
 
 INVALID_UNSUBSCRIBE_HTML = "<p>Invalid or expired unsubscribe link.</p>"
+
+CONFIRM_UNSUBSCRIBE_HTML = """<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Confirm unsubscribe</title></head><body>
+<main><h1>Unsubscribe from this campaign?</h1>
+<p>Confirm to stop future emails from this campaign.</p>
+<form method="post"><button type="submit" name="confirm" value="unsubscribe">Confirm unsubscribe</button></form>
+</main></body></html>"""
 
 
 async def is_known_ip(db: AsyncSession, ip: str | None) -> bool:
@@ -176,65 +186,113 @@ async def record_email_click(db: AsyncSession, token: str, ip: str | None) -> bo
     return True
 
 
-async def process_unsubscribe(db: AsyncSession, token: str) -> tuple[str, int]:
-    """Run unsubscribe flow; return (html_body, http_status)."""
+async def unsubscribe_page(db: AsyncSession, token: str) -> tuple[str, int]:
+    """Read-only link landing page, including for mail scanner GET/HEAD requests."""
+    result = await db.execute(select(LeadUnsubscribeToken).where(LeadUnsubscribeToken.token == token))
+    row = result.scalar_one_or_none()
+    if not row:
+        return INVALID_UNSUBSCRIBE_HTML, 404
+    cl_res = await db.execute(select(CampaignLead).where(
+        CampaignLead.lead_id == row.lead_id, CampaignLead.campaign_id == row.campaign_id,
+    ))
+    cl = cl_res.scalar_one_or_none()
+    if cl is None:
+        return INVALID_UNSUBSCRIBE_HTML, 404
+    if cl.enrollment_status == "unsubscribed":
+        return ALREADY_UNSUBSCRIBED_HTML, 200
+    return CONFIRM_UNSUBSCRIBE_HTML, 200
+
+
+async def process_unsubscribe(
+    db: AsyncSession, token: str, *, ip_address: str | None = None,
+    user_agent: str | None = None, mechanism: str,
+) -> tuple[str, int]:
+    """Apply a validated POST action; return (html_body, http_status)."""
     result = await db.execute(select(LeadUnsubscribeToken).where(LeadUnsubscribeToken.token == token))
     row = result.scalar_one_or_none()
     if not row:
         return INVALID_UNSUBSCRIBE_HTML, 404
 
-    lead_res = await db.execute(select(Lead).where(Lead.id == row.lead_id))
-    lead = lead_res.scalar_one_or_none()
+    changed, old_status = await _apply_confirmed_unsubscribe(
+        db, row.lead_id, row.campaign_id, ip_address=ip_address,
+        user_agent=user_agent, mechanism=mechanism,
+    )
+    if old_status is None:
+        return INVALID_UNSUBSCRIBE_HTML, 404
+    await db.commit()
+    if changed:
+        await emit_unsubscribe_webhooks(db, row.lead_id, row.campaign_id,
+                                        old_status=old_status, mechanism=mechanism)
+    return (_UNSUBSCRIBE_HTML if changed else ALREADY_UNSUBSCRIBED_HTML), 200
 
-    already_done = False
+
+async def _apply_confirmed_unsubscribe(
+    db: AsyncSession, lead_id: int, campaign_id: int, *,
+    ip_address: str | None, user_agent: str | None, mechanism: str,
+) -> tuple[bool, str | None]:
+    """Change campaign state and queue in the caller's transaction."""
     cl_res = await db.execute(
         select(CampaignLead).where(
-            CampaignLead.lead_id == row.lead_id,
-            CampaignLead.campaign_id == row.campaign_id,
-        )
+            CampaignLead.lead_id == lead_id,
+            CampaignLead.campaign_id == campaign_id,
+        ).with_for_update().execution_options(populate_existing=True)
     )
     cl = cl_res.scalar_one_or_none()
     if not cl:
-        already_done = True
-    else:
-        if cl.enrollment_status == "unsubscribed":
-            already_done = True
-        else:
-            cl.enrollment_status = "unsubscribed"
-            cl.interest_status = None
-            log.info(
-                "Unsubscribed lead_id=%s via campaign_id=%s token=%s",
-                row.lead_id,
-                row.campaign_id,
-                token,
-            )
-        await db.execute(delete(QueueSlot).where(QueueSlot.campaign_lead_id == cl.id))
+        return False, None
+    # An earlier legacy Beacon event may have created a review hold. A later
+    # confirmed POST supplies the missing proof and closes that request in the
+    # same transaction as the unsubscribe transition.
+    pending = await db.scalar(select(UnconfirmedUnsubscribeRequest).where(
+        UnconfirmedUnsubscribeRequest.lead_id == lead_id,
+        UnconfirmedUnsubscribeRequest.campaign_id == campaign_id,
+        UnconfirmedUnsubscribeRequest.reviewed_at.is_(None),
+    ).with_for_update())
+    if pending is not None:
+        pending.reviewed_at = time_provider.utcnow()
+        pending.review_decision = "confirmed"
+    old_status = cl.enrollment_status
+    changed = old_status != "unsubscribed"
+    if changed:
+        cl.enrollment_status = "unsubscribed"
+        cl.interest_status = None
+        db.add(UnsubscribeAudit(
+            lead_id=lead_id, campaign_id=campaign_id,
+            occurred_at=time_provider.utcnow(), request_method="POST",
+            ip_address=ip_address[:45] if ip_address else None,
+            user_agent=user_agent[:512] if user_agent else None,
+            mechanism=mechanism,
+        ))
+        log.info("Unsubscribed lead_id=%s campaign_id=%s mechanism=%s",
+                 lead_id, campaign_id, mechanism)
+    await db.execute(delete(QueueSlot).where(QueueSlot.campaign_lead_id == cl.id))
+    return changed, old_status
 
-    await db.commit()
 
-    if not already_done and lead and cl:
-        await fire_webhook_event(
-            db,
-            "lead.unsubscribed",
-            {
-                "lead_id": row.lead_id,
-                "lead_email": lead.email if lead else "",
-                "campaign_id": row.campaign_id,
-                "timestamp": time_provider.utcnow().isoformat() + "Z",
-            },
-        )
-        await fire_webhook_event(
-            db,
-            "lead.status_changed",
-            {
-                "lead_id": row.lead_id,
-                "lead_email": lead.email if lead else "",
-                "campaign_id": row.campaign_id,
-                "old_enrollment_status": "active",
-                "new_enrollment_status": "unsubscribed",
-                "timestamp": time_provider.utcnow().isoformat() + "Z",
-            },
-        )
+async def confirm_unsubscribe_request(
+    db: AsyncSession, request_row: UnconfirmedUnsubscribeRequest,
+) -> str | None:
+    """Apply an operator's accepted review without committing the review row."""
+    changed, old_status = await _apply_confirmed_unsubscribe(
+        db, request_row.lead_id, request_row.campaign_id,
+        ip_address=request_row.ip_address, user_agent=request_row.user_agent,
+        mechanism="operator_confirmation",
+    )
+    return old_status if changed else None
 
-    html = ALREADY_UNSUBSCRIBED_HTML if already_done else _UNSUBSCRIBE_HTML
-    return html, 200
+
+async def emit_unsubscribe_webhooks(
+    db: AsyncSession, lead_id: int, campaign_id: int, *,
+    old_status: str, mechanism: str,
+) -> None:
+    lead = await db.scalar(select(Lead).where(Lead.id == lead_id))
+    data = {
+        "lead_id": lead_id, "lead_email": lead.email if lead else "",
+        "campaign_id": campaign_id, "mechanism": mechanism,
+        "request_method": "POST", "timestamp": time_provider.utcnow().isoformat() + "Z",
+    }
+    await fire_webhook_event(db, "lead.unsubscribed", data)
+    await fire_webhook_event(db, "lead.status_changed", {
+        **data, "old_enrollment_status": old_status,
+        "new_enrollment_status": "unsubscribed",
+    })

@@ -223,6 +223,51 @@ async def _run_migrations(conn) -> None:
         "ALTER TABLE smtp_account ADD COLUMN IF NOT EXISTS last_send_at TIMESTAMP WITHOUT TIME ZONE NULL",
         # 2026-09-22: per-campaign RFC 8058 one-click unsubscribe toggle
         "ALTER TABLE campaign ADD COLUMN IF NOT EXISTS add_one_click_unsubscribe BOOLEAN NOT NULL DEFAULT TRUE",
+        # Confirmed unsubscribe provenance (never stores URL tokens).
+        """CREATE TABLE IF NOT EXISTS unsubscribe_audit (
+            id SERIAL PRIMARY KEY,
+            lead_id INTEGER NOT NULL REFERENCES lead(id) ON DELETE CASCADE,
+            campaign_id INTEGER NOT NULL REFERENCES campaign(id) ON DELETE CASCADE,
+            occurred_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+            request_method VARCHAR(8) NOT NULL,
+            ip_address VARCHAR(45),
+            user_agent VARCHAR(512),
+            mechanism VARCHAR(32) NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_unsubscribe_audit_lead_time ON unsubscribe_audit (lead_id, occurred_at)",
+        """CREATE TABLE IF NOT EXISTS unconfirmed_unsubscribe_request (
+            id SERIAL PRIMARY KEY,
+            lead_id INTEGER NOT NULL REFERENCES lead(id) ON DELETE CASCADE,
+            campaign_id INTEGER NOT NULL REFERENCES campaign(id) ON DELETE CASCADE,
+            occurred_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+            last_seen_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+            request_count INTEGER NOT NULL DEFAULT 1,
+            ip_address VARCHAR(45),
+            user_agent VARCHAR(512),
+            reviewed_at TIMESTAMP WITHOUT TIME ZONE,
+            review_decision VARCHAR(16),
+            paused_by_request BOOLEAN NOT NULL DEFAULT FALSE
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_unconfirmed_unsubscribe_open ON unconfirmed_unsubscribe_request (lead_id, campaign_id) WHERE reviewed_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_unconfirmed_unsubscribe_lead_time ON unconfirmed_unsubscribe_request (lead_id, occurred_at)",
+        """CREATE TABLE IF NOT EXISTS lead_research (
+            id SERIAL PRIMARY KEY,
+            lead_id INTEGER NOT NULL UNIQUE REFERENCES lead(id) ON DELETE CASCADE,
+            summary TEXT NOT NULL DEFAULT '',
+            sources JSON NOT NULL DEFAULT '[]',
+            updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+        )""",
+        """CREATE TABLE IF NOT EXISTS personalized_email_draft (
+            id SERIAL PRIMARY KEY,
+            campaign_lead_id INTEGER NOT NULL REFERENCES campaign_lead(id) ON DELETE CASCADE,
+            sequence_id INTEGER NOT NULL REFERENCES sequence(id) ON DELETE CASCADE,
+            subject VARCHAR(512),
+            body TEXT,
+            is_html BOOLEAN,
+            updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+            CONSTRAINT uq_personalized_email_draft_enrollment_sequence UNIQUE (campaign_lead_id, sequence_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_personalized_email_draft_campaign_lead_id ON personalized_email_draft (campaign_lead_id)",
     ]
     # custom_email_override table (IF NOT EXISTS — must be a separate stmt
     # because it uses raw SQL, not ALTER TABLE)

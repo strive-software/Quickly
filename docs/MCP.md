@@ -36,11 +36,20 @@ MCP requests are checked before the MCP session runs. Tool calls that proxy to `
 |------|--------|
 | `list_leads` | List leads (`q`, `status`, `bad_only`, `interest`) — same filters as `GET /api/leads`; all combine with AND when set |
 | `get_lead` | `GET /api/leads/{id}` |
+| `get_lead_research` | Read lead research shared across campaigns |
+| `save_lead_research` | Save research summary and source links; pass `expected_updated_at` from the previous read (`null` to create) |
+| `get_lead_emails` | Read sent details and pending steps across campaigns, optionally filtered by `campaign_id` |
+| `retry_lead_verification` | Retry one unverified, pending, or failed checker result without rechecking cached valid leads |
+| `review_unconfirmed_unsubscribe` | Accept or reject an unconfirmed legacy Beacon request; rejection keeps sending paused |
+| `save_personalized_email_draft` | Save unreleased copy for one lead and sequence, with `expected_updated_at` (`null` to create) |
+| `release_personalized_email_draft` | Explicitly release a saved draft using its `updated_at` revision; may activate scheduling |
 | `update_lead` | `PATCH /api/leads/{id}` (`name`, `enrollment_status`, `custom_data`) |
 | `delete_lead` | `DELETE /api/leads/{id}` |
 | `add_campaign_leads` | `POST /api/campaigns/{campaign_id}/leads` (bulk add / enroll) |
 
 Standalone lead creation is not exposed as a separate MCP tool; use `add_campaign_leads` (same rules as the REST API).
+
+Research and draft writes return **409** if another editor saved a newer revision. Read the latest value, then retry with its `updated_at`. Saving a draft does not alter the sendable override or schedule. New leads added by `add_campaign_leads` enter automatic email verification before scheduling; the old `verify_emails` argument is retained for client compatibility but no longer opts out of verification.
 
 ---
 

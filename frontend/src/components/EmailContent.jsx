@@ -13,9 +13,10 @@ import DOMPurify from 'dompurify';
 // are unwound to the original destination so that viewing an email in
 // the app does not inflate analytics.
 
-function sanitizeHtml(html) {
+function sanitizeHtml(html, blockImages = false) {
   return DOMPurify.sanitize(html || '', {
     USE_PROFILES: { html: true },
+    FORBID_ATTR: blockImages ? ['style'] : [],
     FORBID_TAGS: [
       'script',
       'iframe',
@@ -29,6 +30,7 @@ function sanitizeHtml(html) {
       'link',
       'meta',
       'base',
+      ...(blockImages ? ['img', 'style'] : []),
     ],
   });
 }
@@ -108,7 +110,7 @@ function collapseGmailQuotes(sanitizedHtml) {
 }
 
 
-function EmailContent({ html, stripTracking }) {
+function EmailContent({ html, stripTracking, blockImages = false }) {
   const hostRef = useRef(null);
   const shadowRootRef = useRef(null);
 
@@ -121,7 +123,7 @@ function EmailContent({ html, stripTracking }) {
     if (stripTracking) {
       processed = stripTrackingFromHtml(processed);
     }
-    const sanitized = sanitizeHtml(processed);
+    const sanitized = sanitizeHtml(processed, blockImages);
     const withCollapsed = collapseGmailQuotes(sanitized);
 
     // The shadow root already keeps our app's CSS out of the email,
@@ -169,7 +171,7 @@ function EmailContent({ html, stripTracking }) {
     `;
 
     shadowRootRef.current.innerHTML = content;
-  }, [html, stripTracking]);
+  }, [html, stripTracking, blockImages]);
 
   return <div ref={hostRef} className="email-content" />;
 }

@@ -2437,12 +2437,22 @@ _verification_lock = asyncio.Lock()
 _verification_last_check_at: float | None = None
 
 
+def _custom_valid_values(raw: str | None) -> list[str]:
+    try:
+        values = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(values, list):
+        return []
+    return [value.strip() for value in values if isinstance(value, str) and value.strip()]
+
+
 async def require_verification_ready(db: AsyncSession) -> None:
     """Reject manual verification before changing a cached sendable verdict."""
     from app.app_settings import (
         get_setting, EMAIL_VERIFICATION_ENABLED, EMAIL_VERIFICATION_PROVIDER,
         EMAIL_VERIFICATION_API_KEY, EMAIL_VERIFICATION_CUSTOM_URL,
-        EMAIL_VERIFICATION_CUSTOM_FIELD,
+        EMAIL_VERIFICATION_CUSTOM_FIELD, EMAIL_VERIFICATION_CUSTOM_VALID_VALUES,
     )
 
     enabled = (await get_setting(db, EMAIL_VERIFICATION_ENABLED) or "false").lower() in ("true", "1", "yes")
@@ -2452,7 +2462,8 @@ async def require_verification_ready(db: AsyncSession) -> None:
     if provider_name == "custom":
         custom_url = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_URL) or ""
         custom_field = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_FIELD) or ""
-        if "{email}" not in custom_url or not custom_field.strip():
+        valid_vals = _custom_valid_values(await get_setting(db, EMAIL_VERIFICATION_CUSTOM_VALID_VALUES))
+        if "{email}" not in custom_url or not custom_field.strip() or not valid_vals:
             raise HTTPException(503, "Custom verification provider is not configured")
     elif not (await get_setting(db, EMAIL_VERIFICATION_API_KEY) or "").strip():
         raise HTTPException(503, "Email verification API key is not configured")
@@ -2535,10 +2546,10 @@ async def _run_background_verification_locked(lead_ids: list[int], *, reverify: 
             if provider_name == "custom":
                 custom_url = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_URL) or ""
                 custom_field = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_FIELD) or ""
-                valid_vals = json.loads(await get_setting(db, EMAIL_VERIFICATION_CUSTOM_VALID_VALUES) or "[]")
+                valid_vals = _custom_valid_values(await get_setting(db, EMAIL_VERIFICATION_CUSTOM_VALID_VALUES))
                 invalid_vals = json.loads(await get_setting(db, EMAIL_VERIFICATION_CUSTOM_INVALID_VALUES) or "[]")
                 custom_method = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_METHOD) or "GET"
-                if "{email}" not in custom_url or not custom_field.strip():
+                if "{email}" not in custom_url or not custom_field.strip() or not valid_vals:
                     log.warning("Custom email verification provider has no valid URL template configured")
                     await _fail_pending(db, "Custom verification provider is not configured")
                     return

@@ -10,7 +10,7 @@ const STATUS_ICON = {
   valid:   { icon: '✓', label: 'Send',          cls: 'text-green-600 font-semibold' },
   invalid: { icon: '✗', label: 'Skip',          cls: 'text-red-500 font-semibold' },
   risky:   { icon: '⚠', label: 'Skip (risky)',  cls: 'text-yellow-600 font-semibold' },
-  unknown: { icon: '?', label: 'Allow through', cls: 'text-gray-500' },
+  unknown: { icon: '?', label: 'Needs mapping', cls: 'text-amber-600' },
 };
 
 export default function EmailVerificationSettings() {
@@ -47,6 +47,7 @@ export default function EmailVerificationSettings() {
   const [extraEmails,       setExtraEmails]       = useState('');
   const [customTesting,     setCustomTesting]     = useState(false);
   const [customTestResults, setCustomTestResults] = useState(null);
+  const [customTestError, setCustomTestError] = useState('');
 
   // ── load saved settings ────────────────────────────────────────────────────
   useEffect(() => {
@@ -141,6 +142,7 @@ export default function EmailVerificationSettings() {
         invalid_values: [],
         method: customMethod,
         test_emails: [emailToProbe],
+        persist_configuration: false,
       });
       const first = res.results?.[0];
       setProbeResult(first ? { email: first.email, response: first.raw_response } : null);
@@ -157,6 +159,7 @@ export default function EmailVerificationSettings() {
     }
     setCustomTesting(true);
     setCustomTestResults(null);
+    setCustomTestError('');
     const extra = extraEmails
       .split(/[\n,]+/)
       .map(s => s.trim())
@@ -172,10 +175,18 @@ export default function EmailVerificationSettings() {
         test_emails: extra, // empty = backend auto-picks from inboxes/leads/synthetics
       });
       setCustomTestResults(res.results || []);
-      setConnectionTested(true);
-      setCredsChanged(false);
-      notify({ type: 'success', message: `Tested ${res.results?.length ?? 0} emails` });
+      setConnectionTested(res.connection_tested === true);
+      if (res.connection_tested === true) {
+        setCredsChanged(false);
+        notify({ type: 'success', message: `Tested ${res.results?.length ?? 0} emails` });
+      } else {
+        const message = 'No checker response matched a configured Good or Bad value. Update the mapping and run the test again.';
+        setCustomTestError(message);
+        notify({ type: 'error', message });
+      }
     } catch (e) {
+      setConnectionTested(false);
+      setCustomTestError(e.message || 'Could not test the custom checker');
       notify({ type: 'error', message: e.message });
     } finally {
       setCustomTesting(false);
@@ -380,7 +391,7 @@ export default function EmailVerificationSettings() {
                   <StepLabel n={4} title="What do the values mean?" />
                   <p className="text-xs text-gray-500 mb-3">
                     Type the exact values your API uses and separate them with a comma.
-                    Anything not listed is treated as unknown — the email is still sent.
+                    Values not listed cannot be verified. Add every result your checker may return.
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -440,6 +451,7 @@ export default function EmailVerificationSettings() {
                 {/* ── Test results ── */}
                 {customTestResults !== null && (
                   <div>
+                    {customTestError && <p role="alert" className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">{customTestError}</p>}
                     <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                       Results — check the "Decision" column matches what you'd expect:
                     </p>
@@ -474,12 +486,11 @@ export default function EmailVerificationSettings() {
                     </div>
                     {customTestResults.some(r => r.status === 'unknown') && (
                       <p className="text-xs text-amber-600 mt-2">
-                        ⚠ Some emails came back as unknown — the value your API returned isn't in your Good or Bad
-                        list. Add it above, or leave it to allow those emails through.
+                        ⚠ Some responses are not mapped to a Good or Bad value. Add the returned values above and test again.
                       </p>
                     )}
                     <p className="text-xs text-gray-400 mt-1">
-                      Happy with the results? Click Save below.
+                      {customTestError ? 'Fix the mapping above and run the test again.' : 'Happy with the results? Click Save below.'}
                     </p>
                   </div>
                 )}

@@ -216,7 +216,7 @@ export default function LeadDetail() {
                 )}
                 {row.kind === 'unconfirmed_unsubscribe' && <div className="mt-2 space-y-1 text-xs text-gray-700">
                   <p>{row.request_count || 1} request{row.request_count === 1 ? '' : 's'} · Last seen {formatDt(row.last_seen_at)}</p>
-                  <p>{row.review_decision === 'rejected' && row.paused_by_request ? 'Sending remains paused' : row.review_decision ? 'Review resolved' : row.paused_by_request ? 'Sending paused for review' : 'Review required'}{row.ip_address ? ` · IP ${row.ip_address}` : ''}{row.user_agent ? ` · ${row.user_agent}` : ''}</p>
+                  <p>{row.unsubscribe_review_hold ? (row.review_decision ? 'Sending remains paused' : 'Sending paused for review') : row.review_decision ? 'Review resolved' : 'Review required'}{row.ip_address ? ` · IP ${row.ip_address}` : ''}{row.user_agent ? ` · ${row.user_agent}` : ''}</p>
                   {row.review_decision ? <p className="font-medium">{reviewLabels[row.review_decision] || row.review_decision} {row.reviewed_at ? `· ${formatDt(row.reviewed_at)}` : ''}</p> : <div className="flex gap-3 pt-1">
                     <button type="button" disabled={reviewBusy === row.request_id} onClick={() => reviewUnconfirmed(row, 'accepted')} className="text-red-700 underline disabled:opacity-50">Accept unsubscribe</button>
                     <button type="button" disabled={reviewBusy === row.request_id} onClick={() => reviewUnconfirmed(row, 'rejected')} className="text-teal-700 underline disabled:opacity-50">Reject request</button>

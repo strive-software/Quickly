@@ -8,7 +8,9 @@ from sqlalchemy import select
 from app.models import (CustomEmailOverride, PersonalizedEmailDraft, UnsubscribeAudit,
                         UnconfirmedUnsubscribeRequest, LeadReply)
 from app.app_settings import (put_setting, EMAIL_VERIFICATION_ENABLED,
-                              EMAIL_VERIFICATION_API_KEY)
+                              EMAIL_VERIFICATION_API_KEY, EMAIL_VERIFICATION_PROVIDER,
+                              EMAIL_VERIFICATION_CUSTOM_URL, EMAIL_VERIFICATION_CUSTOM_FIELD,
+                              EMAIL_VERIFICATION_CUSTOM_VALID_VALUES)
 from app.routers.campaigns import (save_custom_email_draft, release_custom_email_draft,
                                    bulk_add_leads_to_campaign, import_campaign_leads,
                                    trigger_verification_for_campaign, write_custom_email,
@@ -16,7 +18,8 @@ from app.routers.campaigns import (save_custom_email_draft, release_custom_email
 from app.routers.leads import (create_lead, get_lead_emails, get_lead_research,
                                put_lead_research, retry_lead_verification,
                                review_unconfirmed_unsubscribe,
-                               _fetch_lead_interactions, _reset_all_enrollments_for_lead,
+                               _fetch_lead_interactions, _fetch_lead_interactions_batch,
+                               _reset_all_enrollments_for_lead,
                                _mutate_lead_recover)
 from app.schemas import (CampaignLeadAdd, CustomEmailDraftWrite, CustomEmailWrite, DraftReleaseRequest,
                          LeadResearchWrite, LeadResearchSource, LeadCreateWithCampaign)
@@ -455,6 +458,13 @@ async def test_unsubscribe_review_hold_blocks_resume_and_recovery(session):
         CampaignLeadEnrollmentPatch(sending_paused=False), BackgroundTasks(), session)
     assert result["unsubscribe_review_hold"] is False
     assert enrollment.sending_paused is False
+    timeline = await _fetch_lead_interactions(session, lead.id)
+    event = next(event for event in timeline if event["kind"] == "unconfirmed_unsubscribe")
+    assert event["paused_by_request"] is True
+    assert event["unsubscribe_review_hold"] is False
+    batch = await _fetch_lead_interactions_batch(session, [lead.id])
+    event = next(event for event in batch[lead.id] if event["kind"] == "unconfirmed_unsubscribe")
+    assert event["unsubscribe_review_hold"] is False
 
 
 async def test_recovery_preserves_confirmed_unsubscribe(session):
@@ -490,5 +500,19 @@ async def test_explicit_verification_requires_config_before_mutation(session):
     with pytest.raises(HTTPException) as missing_key:
         await trigger_verification_for_campaign(campaign.id, BackgroundTasks(), reverify=False, db=session)
     assert missing_key.value.status_code == 503
+    assert lead.email_verification_status == "verification_error"
+    assert lead.email_verification_result == {"error": "Previous failure"}
+
+    await put_setting(session, EMAIL_VERIFICATION_PROVIDER, "custom")
+    await put_setting(session, EMAIL_VERIFICATION_CUSTOM_URL, "https://checker.example/{email}")
+    await put_setting(session, EMAIL_VERIFICATION_CUSTOM_FIELD, "result")
+    await put_setting(session, EMAIL_VERIFICATION_CUSTOM_VALID_VALUES, '["", "  "]')
+    await session.commit()
+    with pytest.raises(HTTPException) as no_valid_mapping:
+        await retry_lead_verification(lead.id, BackgroundTasks(), session)
+    assert no_valid_mapping.value.status_code == 503
+    with pytest.raises(HTTPException) as campaign_no_mapping:
+        await trigger_verification_for_campaign(campaign.id, BackgroundTasks(), reverify=False, db=session)
+    assert campaign_no_mapping.value.status_code == 503
     assert lead.email_verification_status == "verification_error"
     assert lead.email_verification_result == {"error": "Previous failure"}

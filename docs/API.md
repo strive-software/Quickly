@@ -1635,6 +1635,7 @@ Register the caller's IP as a non-permanent known IP (auto-expires after 7 days)
 Email verification checks newly created addresses before they are eligible for sending. They enter `pending`; existing leads keep their current verdict and live enrollments. Missing checker configuration or provider errors produce `verification_error` and a safe `verification_error` message on lead responses. Those addresses remain unscheduled until the checker is configured and `POST /api/leads/{id}/verify` retries them. Invalid and risky results remove queue slots.
 
 Explicit verification and recovery with `verify_email=true` return **503** before changing any existing lead when verification is disabled or required provider settings are missing. New leads still enter `pending` automatically; the background checker records a visible `verification_error` when unavailable.
+The custom provider requires a URL containing `{email}`, a result field path, and at least one nonempty value in `custom_valid_values`.
 
 Supported providers: `mailtester_ninja` (requires API key) and `custom` (any HTTP endpoint).
 

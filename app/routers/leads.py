@@ -423,6 +423,9 @@ async def _fetch_lead_interactions(db: AsyncSession, lead_id: int) -> list[dict]
             "ip_address": audit.ip_address, "user_agent": audit.user_agent,
         })
 
+    hold_rows = await db.execute(select(CampaignLead.campaign_id, CampaignLead.unsubscribe_review_hold).where(
+        CampaignLead.lead_id == lead_id))
+    current_holds = dict(hold_rows.all())
     pending_rows = await db.execute(
         select(UnconfirmedUnsubscribeRequest, Campaign.name, Campaign.public_id)
         .join(Campaign, UnconfirmedUnsubscribeRequest.campaign_id == Campaign.id)
@@ -438,6 +441,7 @@ async def _fetch_lead_interactions(db: AsyncSession, lead_id: int) -> list[dict]
             "campaign_public_id": pub,
             "ip_address": request.ip_address, "user_agent": request.user_agent,
             "paused_by_request": request.paused_by_request,
+            "unsubscribe_review_hold": bool(current_holds.get(request.campaign_id)),
             "review_decision": request.review_decision,
             "reviewed_at": revision(request.reviewed_at),
         })
@@ -576,6 +580,10 @@ async def _fetch_lead_interactions_batch(
             "ip_address": audit.ip_address, "user_agent": audit.user_agent,
         })
 
+    hold_rows = await db.execute(select(
+        CampaignLead.lead_id, CampaignLead.campaign_id, CampaignLead.unsubscribe_review_hold,
+    ).where(CampaignLead.lead_id.in_(lead_ids)))
+    current_holds = {(lead_id, campaign_id): bool(hold) for lead_id, campaign_id, hold in hold_rows.all()}
     pending_rows = await db.execute(
         select(UnconfirmedUnsubscribeRequest, Campaign.name, Campaign.public_id)
         .join(Campaign, UnconfirmedUnsubscribeRequest.campaign_id == Campaign.id)
@@ -591,6 +599,7 @@ async def _fetch_lead_interactions_batch(
             "campaign_public_id": pub,
             "ip_address": request.ip_address, "user_agent": request.user_agent,
             "paused_by_request": request.paused_by_request,
+            "unsubscribe_review_hold": current_holds.get((request.lead_id, request.campaign_id), False),
             "review_decision": request.review_decision,
             "reviewed_at": revision(request.reviewed_at),
         })

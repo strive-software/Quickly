@@ -146,9 +146,10 @@ test('campaign leads table shows row number and profile, and opens the same lead
 test('unconfirmed unsubscribe requests need explicit review and rejection keeps pause', async ({ page }) => {
   const writes = [];
   const requests = [
-    { kind: 'unconfirmed_unsubscribe', request_id: 31, at: '2026-10-15T12:00:00Z', last_seen_at: '2026-10-16T12:00:00Z', request_count: 2, campaign_name: 'Outreach', paused_by_request: true, review_decision: null },
-    { kind: 'unconfirmed_unsubscribe', request_id: 32, at: '2026-10-15T13:00:00Z', last_seen_at: '2026-10-15T13:00:00Z', request_count: 1, campaign_name: 'Other', paused_by_request: true, review_decision: null },
-    { kind: 'unconfirmed_unsubscribe', request_id: 33, at: '2026-10-15T14:00:00Z', last_seen_at: '2026-10-15T14:00:00Z', request_count: 1, campaign_name: 'Recipient campaign', paused_by_request: true, review_decision: 'confirmed' },
+    { kind: 'unconfirmed_unsubscribe', request_id: 31, at: '2026-10-15T12:00:00Z', last_seen_at: '2026-10-16T12:00:00Z', request_count: 2, campaign_name: 'Outreach', paused_by_request: true, unsubscribe_review_hold: true, review_decision: null },
+    { kind: 'unconfirmed_unsubscribe', request_id: 32, at: '2026-10-15T13:00:00Z', last_seen_at: '2026-10-15T13:00:00Z', request_count: 1, campaign_name: 'Other', paused_by_request: true, unsubscribe_review_hold: true, review_decision: null },
+    { kind: 'unconfirmed_unsubscribe', request_id: 33, at: '2026-10-15T14:00:00Z', last_seen_at: '2026-10-15T14:00:00Z', request_count: 1, campaign_name: 'Recipient campaign', paused_by_request: true, unsubscribe_review_hold: false, review_decision: 'confirmed' },
+    { kind: 'unconfirmed_unsubscribe', request_id: 34, at: '2026-10-15T15:00:00Z', last_seen_at: '2026-10-15T15:00:00Z', request_count: 1, campaign_name: 'Resumed campaign', paused_by_request: true, unsubscribe_review_hold: false, review_decision: 'rejected' },
   ];
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -163,7 +164,9 @@ test('unconfirmed unsubscribe requests need explicit review and rejection keeps 
       const body = request.postDataJSON();
       const requestId = Number(path.split('/').at(-2));
       writes.push({ requestId, body });
-      requests.find(item => item.request_id === requestId).review_decision = body.decision;
+      const reviewed = requests.find(item => item.request_id === requestId);
+      reviewed.review_decision = body.decision;
+      if (body.decision === 'accepted') reviewed.unsubscribe_review_hold = false;
       data = { ok: true, request_id: requestId, decision: body.decision, reviewed_at: '2026-10-16T13:00:00Z' };
     }
     await route.fulfill({ json: data });
@@ -175,6 +178,10 @@ test('unconfirmed unsubscribe requests need explicit review and rejection keeps 
   await expect(confirmed.getByText('Confirmed by recipient')).toBeVisible();
   await expect(confirmed.getByRole('button', { name: 'Reject request' })).toHaveCount(0);
   await expect(confirmed.getByRole('button', { name: 'Accept unsubscribe' })).toHaveCount(0);
+  const resumed = page.getByRole('listitem').filter({ hasText: 'Resumed campaign' });
+  await expect(resumed.getByText('Review resolved')).toBeVisible();
+  await expect(resumed.getByText('Rejected')).toBeVisible();
+  await expect(resumed.getByText('Sending remains paused')).toHaveCount(0);
   const first = page.getByRole('listitem').filter({ hasText: '2 requests' });
   await first.getByRole('button', { name: 'Reject request' }).click();
   await expect(page.getByText('An older Beacon page may already have shown the recipient a success message.')).toBeVisible();

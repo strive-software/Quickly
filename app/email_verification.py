@@ -170,7 +170,8 @@ class CustomHttpProvider(BaseVerificationProvider):
         elif str_val in self.invalid_values:
             status = INVALID
         else:
-            status = UNKNOWN
+            return VerificationResult(email, UNKNOWN, raw=data,
+                message="Configured verification result did not match a verdict", failed=True)
         message = f"field '{self.field_path}' = {raw_value!r}"
         return VerificationResult(email, status, raw=data, message=message)
 

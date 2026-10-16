@@ -54,6 +54,35 @@ from app import time as time_provider
 import app.scheduler as scheduler_mod
 
 
+_verification_recovery_lock = asyncio.Lock()
+
+
+async def resume_pending_verifications() -> None:
+    """Resume a bounded batch of durable pending leads after a lost background task.
+
+    The shared verifier serializes provider calls and rechecks pending status;
+    this lock only prevents overlapping recovery scans in this app process.
+    """
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models import Lead
+
+    async with _verification_recovery_lock:
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(Lead.id)
+                    .where(Lead.email_verification_status == "pending")
+                    .order_by(Lead.id)
+                    .limit(100)
+                )
+                lead_ids = list(result.scalars().all())
+            if lead_ids:
+                await campaigns._run_background_verification(lead_ids)
+        except Exception:
+            logging.getLogger("quickly").exception("Pending verification recovery failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -110,6 +139,15 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
             max_instances=1,
         )
+        schedule.add_job(
+            resume_pending_verifications,
+            "interval",
+            minutes=5,
+            id="verification_recovery",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
         schedule.start()
 
         from app.backup_schedule import register_scheduled_backup_from_db
@@ -135,6 +173,7 @@ async def lifespan(app: FastAPI):
         startup_tasks = [
             asyncio.create_task(kickoff()),
             asyncio.create_task(queue_sync_for_all_inboxes(reason="startup")),
+            asyncio.create_task(resume_pending_verifications()),
         ]
 
         yield

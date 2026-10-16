@@ -80,6 +80,7 @@ def _inject_bare_url_tracking(
     html: str,
     tracking_base: str,
     link_pairs: list[tuple[str, str]],
+    untracked_url: str | None = None,
 ) -> str:
     """Wrap plain-text URLs (not already inside ``<a>`` tags) with click-tracking links.
 
@@ -98,7 +99,7 @@ def _inject_bare_url_tracking(
         # Strip trailing punctuation that is almost certainly not part of the URL.
         stripped = url.rstrip(".,;:!?)")
         trailing = url[len(stripped):]
-        if stripped.startswith(tracking_base):
+        if stripped.startswith(tracking_base) or stripped == untracked_url:
             return m.group(0)
         token = make_tracking_token()
         link_pairs.append((token, stripped))
@@ -131,13 +132,14 @@ def inject_tracking_html(
     track_opens: bool = True,
     track_clicks: bool = True,
     open_token: str | None = None,
+    untracked_url: str | None = None,
 ) -> tuple[str, list[tuple[str, str]]]:
     """Rewrite every http(s) href in *html* to a click-tracking redirect URL
     and append a 1×1 open-tracking pixel just before ``</body>`` (or at end).
 
-    Links whose URL already starts with *tracking_base* (e.g. the unsubscribe
-    link ``/u/{token}``) are left untouched — they are already served by this
-    same server and need no extra redirection.
+    Links on *tracking_base* and the exact *untracked_url* are left untouched.
+    The latter lets unsubscribe links use Quickly while opens and clicks use
+    a separate Beacon hostname.
 
     The open pixel URL uses *open_token* when provided (non-incremental ID),
     falling back to *email_log_id* for backwards compatibility.
@@ -156,7 +158,7 @@ def inject_tracking_html(
         original_url = m.group(3)
         # Don't rewrite URLs already served by this tracking server
         # (e.g. the unsubscribe endpoint /u/<token>)
-        if original_url.startswith(tracking_base):
+        if original_url.startswith(tracking_base) or original_url == untracked_url:
             return m.group(0)
         token = make_tracking_token()
         link_pairs.append((token, original_url))
@@ -166,7 +168,8 @@ def inject_tracking_html(
         new_html = _HREF_RE.sub(_replace, html)
         # Also wrap bare URLs in text nodes that Gmail auto-linkifies but
         # which would otherwise bypass click tracking entirely.
-        new_html = _inject_bare_url_tracking(new_html, tracking_base, link_pairs)
+        new_html = _inject_bare_url_tracking(new_html, tracking_base, link_pairs,
+                                             untracked_url=untracked_url)
     else:
         new_html = html
 

@@ -6,6 +6,7 @@ import { api } from '../api';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { useNotify } from '../context/NotificationContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { useLoading } from '../context/LoadingContext';
 
 function formatDt(iso) {
@@ -14,12 +15,16 @@ function formatDt(iso) {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
+const reviewLabels = { accepted: 'Accepted', rejected: 'Rejected', confirmed: 'Confirmed by recipient' };
+
 export default function LeadDetail() {
   const { id } = useParams();
   const notify = useNotify();
+  const confirm = useConfirm();
   const loading = useLoading();
   const [lead, setLead] = useState(null);
   const [error, setError] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(null);
 
   const load = useCallback(async () => {
     loading.start();
@@ -38,6 +43,20 @@ export default function LeadDetail() {
   useEffect(() => {
     load();
   }, [load]);
+
+  async function reviewUnconfirmed(row, decision) {
+    const prompt = decision === 'accepted'
+      ? 'Accept this request and unsubscribe the lead?'
+      : 'Reject this unconfirmed request? An older Beacon page may already have shown the recipient a success message. Sending remains paused; resume separately after review.';
+    if (!await confirm(prompt)) return;
+    setReviewBusy(row.request_id);
+    try {
+      await api.post(`/leads/${id}/unconfirmed-unsubscribes/${row.request_id}/review`, { decision });
+      notify({ type: 'success', message: decision === 'accepted' ? 'Unsubscribe request accepted' : 'Request rejected. Sending remains paused.' });
+      await load();
+    } catch (e) { notify({ type: 'error', message: e.message || 'Could not review request' }); }
+    finally { setReviewBusy(null); }
+  }
 
   if (error && !lead) {
     return (
@@ -164,7 +183,7 @@ export default function LeadDetail() {
           Interactions
         </h2>
         <p className="text-xs text-gray-500 mb-3">
-          Outbound sends and inbound messages we can associate (mirrored mail + reply markers). Full threads: Unibox.
+          Outbound sends, inbound replies, and unsubscribe requests. Full mail threads: Unibox.
         </p>
         {lead.interactions?.length ? (
           <ul className="space-y-3 text-sm">
@@ -187,6 +206,22 @@ export default function LeadDetail() {
                 {row.snippet && (
                   <p className="text-xs text-gray-600 mt-1 line-clamp-3">{row.snippet}</p>
                 )}
+                {row.kind === 'unsubscribed' && (
+                  <p className="text-xs text-gray-600 mt-1">
+                    Unsubscribe via {row.mechanism || 'unknown method'}
+                    {row.request_method ? ` · ${row.request_method}` : ''}
+                    {row.ip_address ? ` · IP ${row.ip_address}` : ''}
+                    {row.user_agent ? ` · ${row.user_agent}` : ''}
+                  </p>
+                )}
+                {row.kind === 'unconfirmed_unsubscribe' && <div className="mt-2 space-y-1 text-xs text-gray-700">
+                  <p>{row.request_count || 1} request{row.request_count === 1 ? '' : 's'} · Last seen {formatDt(row.last_seen_at)}</p>
+                  <p>{row.unsubscribe_review_hold ? (row.review_decision ? 'Sending remains paused' : 'Sending paused for review') : row.review_decision ? 'Review resolved' : 'Review required'}{row.ip_address ? ` · IP ${row.ip_address}` : ''}{row.user_agent ? ` · ${row.user_agent}` : ''}</p>
+                  {row.review_decision ? <p className="font-medium">{reviewLabels[row.review_decision] || row.review_decision} {row.reviewed_at ? `· ${formatDt(row.reviewed_at)}` : ''}</p> : <div className="flex gap-3 pt-1">
+                    <button type="button" disabled={reviewBusy === row.request_id} onClick={() => reviewUnconfirmed(row, 'accepted')} className="text-red-700 underline disabled:opacity-50">Accept unsubscribe</button>
+                    <button type="button" disabled={reviewBusy === row.request_id} onClick={() => reviewUnconfirmed(row, 'rejected')} className="text-teal-700 underline disabled:opacity-50">Reject request</button>
+                  </div>}
+                </div>}
               </li>
             ))}
           </ul>

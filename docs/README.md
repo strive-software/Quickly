@@ -189,6 +189,7 @@ Quickly has a built-in user system. On first run, visit the login page and regis
 
 **What happens when someone unsubscribes?**
 Quickly automatically catches unsubscribe replies via AI classification and marks those leads so they never receive another email.
+For unsubscribe links, opening the link only shows a confirmation page. The recipient must press **Confirm unsubscribe**, or an email client must send an RFC 8058 one-click POST. A confirmed action stops that campaign enrollment and cancels its remaining queued emails; repeated requests have no additional effect.
 
 ---
 

@@ -16,8 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Inbox, TrackedLink
+from app.models import (
+    CampaignLead, Inbox, LeadUnsubscribeToken, TrackedLink,
+    UnconfirmedUnsubscribeRequest,
+)
 from app.tracking_events import record_email_click, record_email_open, process_unsubscribe
+from app import time as time_provider
+from app.webhooks import fire_webhook_event
 
 log = logging.getLogger("quickly.beacon_ingest")
 
@@ -79,5 +84,56 @@ async def beacon_ingest(request: Request, db: AsyncSession = Depends(get_db)):
         await record_email_click(db, path_token, ip)
         return {"ok": True}
 
-    await process_unsubscribe(db, path_token)
+    # The action metadata is covered by the Beacon HMAC. Older Beacon versions
+    # omit it, so their signed event cannot prove a human-confirmed POST.
+    method = data.get("request_method")
+    action = data.get("unsubscribe_action")
+    user_agent = data.get("user_agent")
+    if user_agent is not None and not isinstance(user_agent, str):
+        raise HTTPException(422, "invalid user_agent")
+    if method != "POST" or action not in ("browser_confirmation", "rfc8058_one_click"):
+        token_row = await db.scalar(select(LeadUnsubscribeToken).where(
+            LeadUnsubscribeToken.token == path_token))
+        if token_row is None:
+            return {"ok": True, "skipped": True}
+        # The inbox may have been removed from the campaign after this email
+        # was sent; the signed event and persistent token still identify its
+        # campaign enrollment.
+        cl = await db.scalar(select(CampaignLead).where(
+            CampaignLead.lead_id == token_row.lead_id,
+            CampaignLead.campaign_id == token_row.campaign_id).with_for_update())
+        if cl is None or cl.enrollment_status == "unsubscribed":
+            return {"ok": True, "skipped": True}
+        pending = await db.scalar(select(UnconfirmedUnsubscribeRequest).where(
+            UnconfirmedUnsubscribeRequest.lead_id == token_row.lead_id,
+            UnconfirmedUnsubscribeRequest.campaign_id == token_row.campaign_id,
+            UnconfirmedUnsubscribeRequest.reviewed_at.is_(None)))
+        now = time_provider.utcnow()
+        created = pending is None
+        if created:
+            pending = UnconfirmedUnsubscribeRequest(
+                lead_id=token_row.lead_id, campaign_id=token_row.campaign_id,
+                occurred_at=now, last_seen_at=now,
+                ip_address=ip[:45] if ip else None,
+                user_agent=user_agent[:512] if user_agent else None,
+                paused_by_request=not cl.sending_paused,
+            )
+            db.add(pending)
+        else:
+            pending.last_seen_at = now
+            pending.request_count += 1
+        cl.sending_paused = True
+        cl.unsubscribe_review_hold = True
+        await db.commit()
+        if created:
+            await fire_webhook_event(db, "feature.error", {
+                "feature": "unsubscribe_review",
+                "label": "Unsubscribe review",
+                "error": "An unconfirmed unsubscribe request needs review; campaign sending is paused.",
+                "lead_id": token_row.lead_id, "campaign_id": token_row.campaign_id,
+            })
+        return {"ok": True, "pending_review": True}
+    mechanism = "beacon_confirmation" if action == "browser_confirmation" else "beacon_one_click"
+    await process_unsubscribe(db, path_token, ip_address=ip,
+                              user_agent=user_agent, mechanism=mechanism)
     return {"ok": True}

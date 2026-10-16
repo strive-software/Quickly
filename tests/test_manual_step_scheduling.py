@@ -172,6 +172,11 @@ async def test_batch_sender_skips_slot_deleted_after_batch_fetch(session, monkey
     from app.jobs import run_send_job
     inbox = await _make_smtp_inbox(session)
     slot = await _make_due_slot(session, inbox)
+    # Queue slots use the app's local clock, while the shared factory uses UTC.
+    # Keep this slot due when the test host has a non-UTC local timezone.
+    from app import time as time_provider
+    slot.scheduled_date = time_provider.now() - timedelta(minutes=1)
+    await session.flush()
     original_execute = session.execute
     invalidated = False
 

@@ -32,6 +32,7 @@ from app.tracking_events import (
     record_email_click,
     record_email_open,
     process_unsubscribe,
+    unsubscribe_page,
     resolve_click_redirect_url,
 )
 from app.client_ip import client_ip_from_request
@@ -77,25 +78,44 @@ async def click_redirect(
     return RedirectResponse(url=dest, status_code=302)
 
 
-@router.get("/u/{token}", include_in_schema=False)
+@router.api_route("/u/{token}", methods=["GET", "HEAD"], include_in_schema=False)
 async def unsubscribe(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Process an unsubscribe request.
+    """Show a read-only confirmation page. Mail scanners may fetch this URL."""
+    html, status = await unsubscribe_page(db, token)
+    return Response(content=html, media_type="text/html", status_code=status,
+                    headers={"Cache-Control": "no-store"})
 
-    Works both as a one-click server-side action (no browser needed – the
-    email client just fires a POST/GET) and as a human-readable page when
-    opened in a browser.  The token encodes the (lead, campaign) pair so we
-    know exactly which campaign to stop.
 
-    Actions:
-      1. Mark this lead's **enrollment** in that campaign as ``unsubscribed``.
-      2. Delete remaining ``QueueSlot`` rows for this lead+campaign so no
-         further emails are dispatched.
-    """
-    html, status = await process_unsubscribe(db, token)
-    return Response(content=html, media_type="text/html", status_code=status)
+@router.post("/u/{token}", include_in_schema=False)
+async def unsubscribe_post(
+    token: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Accept an explicit browser confirmation or RFC 8058 one-click POST."""
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type not in ("application/x-www-form-urlencoded", "multipart/form-data"):
+        return Response(content="Invalid unsubscribe request", status_code=400)
+    try:
+        form = await request.form()
+    except (ValueError, AssertionError):
+        return Response(content="Invalid unsubscribe request", status_code=400)
+    fields = list(form.multi_items())
+    if fields == [("List-Unsubscribe", "One-Click")]:
+        mechanism = "rfc8058_one_click"
+    elif fields == [("confirm", "unsubscribe")]:
+        mechanism = "browser_confirmation"
+    else:
+        return Response(content="Invalid unsubscribe request", status_code=400)
+    html, status = await process_unsubscribe(
+        db, token, ip_address=client_ip_from_request(request),
+        user_agent=request.headers.get("user-agent"), mechanism=mechanism,
+    )
+    return Response(content=html, media_type="text/html", status_code=status,
+                    headers={"Cache-Control": "no-store"})
 
 
 @router.get("/api/caddy/ask", include_in_schema=False)

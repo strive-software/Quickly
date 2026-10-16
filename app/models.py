@@ -21,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Index,
+    text,
 )
 from sqlalchemy.orm import relationship
 from app.time import utcnow as _utcnow
@@ -164,6 +165,17 @@ class Lead(Base):
     )
 
 
+class LeadResearch(Base):
+    """Saved research used when writing lead-specific email copy."""
+    __tablename__ = "lead_research"
+    id = Column(Integer, primary_key=True)
+    lead_id = Column(Integer, ForeignKey("lead.id", ondelete="CASCADE"), nullable=False, unique=True)
+    summary = Column(Text, nullable=False, default="", server_default="")
+    sources = Column(JSON, nullable=False, default=list)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    lead = relationship("Lead")
+
+
 class Campaign(Base):
     llm_voice = Column(Text, nullable=False, default="", server_default="")
     __tablename__ = "campaign"
@@ -295,6 +307,9 @@ class CampaignLead(Base):
     # Whether sending is paused for this specific campaign-lead pair
     # (e.g. auto-paused by AI classifier when marked not_interested)
     sending_paused = Column(Boolean, default=False, nullable=False)
+    # Durable hold for ambiguous signed Beacon unsubscribe events. Only an
+    # explicit per-enrollment review/resume action may lift it.
+    unsubscribe_review_hold = Column(Boolean, default=False, nullable=False)
     campaign = relationship("Campaign", back_populates="campaign_leads")
     lead = relationship("Lead", back_populates="campaign_leads")
     queue_slots = relationship("QueueSlot", back_populates="campaign_lead", cascade="all, delete-orphan", order_by="QueueSlot.sequence_index")
@@ -340,6 +355,21 @@ class CustomEmailOverride(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     campaign_lead = relationship("CampaignLead", back_populates="custom_email_overrides")
     sequence = relationship("Sequence")
+
+
+class PersonalizedEmailDraft(Base):
+    """Unreleased personalized copy; only an override releases a send."""
+    __tablename__ = "personalized_email_draft"
+    __table_args__ = (
+        UniqueConstraint("campaign_lead_id", "sequence_id", name="uq_personalized_email_draft_enrollment_sequence"),
+    )
+    id = Column(Integer, primary_key=True)
+    campaign_lead_id = Column(Integer, ForeignKey("campaign_lead.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence_id = Column(Integer, ForeignKey("sequence.id", ondelete="CASCADE"), nullable=False)
+    subject = Column(String(512), nullable=True)
+    body = Column(Text, nullable=True)
+    is_html = Column(Boolean, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class QueueSlot(Base):
@@ -430,8 +460,8 @@ class LeadUnsubscribeToken(Base):
     """Stores a persistent unsubscribe token for each (lead, campaign) pair.
 
     The token is embedded in the ``{{unsubscribe_link}}`` placeholder and
-    in the ``List-Unsubscribe`` header.  Hitting ``GET /u/<token>`` marks the
-    lead as unsubscribed and removes their remaining queue slots.
+    in the ``List-Unsubscribe`` header. A GET displays a confirmation page;
+    only an explicit POST marks the campaign enrollment unsubscribed.
     """
     __tablename__ = "lead_unsubscribe_token"
     __table_args__ = (UniqueConstraint("lead_id", "campaign_id", name="uq_lead_campaign_unsubscribe"),)
@@ -443,6 +473,43 @@ class LeadUnsubscribeToken(Base):
     # relationships for convenient cascades & joins
     lead = relationship("Lead", back_populates="unsubscribe_tokens")
     campaign = relationship("Campaign", back_populates="unsubscribe_tokens")
+
+
+class UnsubscribeAudit(Base):
+    """A confirmed unsubscribe transition, without storing the link token."""
+    __tablename__ = "unsubscribe_audit"
+    __table_args__ = (Index("ix_unsubscribe_audit_lead_time", "lead_id", "occurred_at"),)
+
+    id = Column(Integer, primary_key=True)
+    lead_id = Column(Integer, ForeignKey("lead.id", ondelete="CASCADE"), nullable=False)
+    campaign_id = Column(Integer, ForeignKey("campaign.id", ondelete="CASCADE"), nullable=False)
+    occurred_at = Column(DateTime, nullable=False, default=_utcnow)
+    request_method = Column(String(8), nullable=False)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+    mechanism = Column(String(32), nullable=False)
+
+
+class UnconfirmedUnsubscribeRequest(Base):
+    """Signed legacy Beacon event requiring human review before unsubscribe."""
+    __tablename__ = "unconfirmed_unsubscribe_request"
+    __table_args__ = (
+        Index("uq_unconfirmed_unsubscribe_open", "lead_id", "campaign_id", unique=True,
+              postgresql_where=text("reviewed_at IS NULL"),
+              sqlite_where=text("reviewed_at IS NULL")),
+        Index("ix_unconfirmed_unsubscribe_lead_time", "lead_id", "occurred_at"),
+    )
+    id = Column(Integer, primary_key=True)
+    lead_id = Column(Integer, ForeignKey("lead.id", ondelete="CASCADE"), nullable=False)
+    campaign_id = Column(Integer, ForeignKey("campaign.id", ondelete="CASCADE"), nullable=False)
+    occurred_at = Column(DateTime, nullable=False, default=_utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=_utcnow)
+    request_count = Column(Integer, nullable=False, default=1)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    review_decision = Column(String(16), nullable=True)
+    paused_by_request = Column(Boolean, nullable=False, default=False)
 
 
 class LeadReply(Base):

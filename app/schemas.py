@@ -70,6 +70,10 @@ class LeadCreate(LeadProfile):
     custom_data: Dict[str, Any] = {}
 
 
+class LeadCreateWithCampaign(LeadCreate):
+    campaign_id: int
+
+
 class LeadUpdate(LeadProfile):
     name: Optional[str] = None
     custom_data: Optional[Dict[str, Any]] = None
@@ -90,6 +94,23 @@ class LeadRecoverRequest(BaseModel):
     verify_email: bool = True
 
 
+class LeadResearchSource(BaseModel):
+    url: str = Field(max_length=2048)
+    title: str = Field(default="", max_length=512)
+    notes: str = Field(default="", max_length=10000)
+
+
+class LeadResearchWrite(BaseModel):
+    summary: str = Field(default="", max_length=50000)
+    sources: List[LeadResearchSource] = Field(default_factory=list)
+    # Null for a new record; use the timestamp returned by GET for updates.
+    expected_updated_at: Optional[str]
+
+
+class UnconfirmedUnsubscribeReview(BaseModel):
+    decision: Literal["accepted", "rejected"]
+
+
 class LeadResponse(LeadProfile):
     last_email_sent_at: Optional[datetime] = None
     id: int
@@ -99,6 +120,7 @@ class LeadResponse(LeadProfile):
     provider: Optional[str] = None
     # valid | invalid | pending | null (other provider values may still appear in DB)
     email_verification_status: Optional[str] = None
+    verification_error: Optional[str] = None
     created_at: datetime
     campaigns: List["LeadCampaignInfo"] = []
     # Populated on GET /api/leads/{id} only: merged outbound sends + inbound mirror/reply markers
@@ -311,6 +333,14 @@ class CustomEmailWrite(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CustomEmailDraftWrite(CustomEmailWrite):
+    expected_updated_at: Optional[str]
+
+
+class DraftReleaseRequest(BaseModel):
+    expected_updated_at: str
 
 
 class CampaignCreate(BaseModel):

@@ -549,8 +549,8 @@ async def unpause_inbox(
 ):
     """Resume a paused inbox.
 
-    Also un-pauses any CampaignLeads that were paused because of this inbox
-    (i.e. leads in campaigns using this inbox that have sending_paused=True)
+    Also un-pauses CampaignLeads in campaigns using this inbox, except those
+    under a durable unsubscribe review hold,
     and triggers a full queue recalculation so they get new slots.
     """
     result = await db.execute(select(Inbox).where(Inbox.id == inbox_id))
@@ -586,6 +586,7 @@ async def unpause_inbox(
             .where(
                 CampaignLead.campaign_id.in_(campaign_ids),
                 CampaignLead.sending_paused == True,  # noqa: E712
+                CampaignLead.unsubscribe_review_hold == False,  # noqa: E712
             )
             .values(sending_paused=False)
         )

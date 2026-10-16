@@ -17,7 +17,7 @@ ENROLLMENT_STATUSES = frozenset(
 # Reply / intent classification (per CampaignLead). Unsubscribe & wrong person live in enrollment.
 LEAD_INTERESTS = frozenset({"interested", "not_interested", "out_of_office", "auto_reply"})
 
-VERIFICATION_BLOCKS_SEND = frozenset({"invalid", "risky", "pending"})
+VERIFICATION_BLOCKS_SEND = frozenset({"invalid", "risky", "pending", "verification_error"})
 
 
 def enrollment_blocks_sends(status: str | None) -> bool:
@@ -35,7 +35,7 @@ def campaign_lead_may_receive_sends(cl: "CampaignLead", lead: "Lead") -> bool:
     ev = getattr(lead, "email_verification_status", None)
     if ev in VERIFICATION_BLOCKS_SEND:
         return False
-    if getattr(cl, "sending_paused", False):
+    if getattr(cl, "sending_paused", False) or getattr(cl, "unsubscribe_review_hold", False):
         return False
     st = getattr(cl, "enrollment_status", None) or "active"
     if enrollment_blocks_sends(st):
@@ -64,6 +64,7 @@ def campaign_lead_schedule_eligibility_clause():
     )
     return and_(
         CampaignLead.sending_paused.is_(False),
+        CampaignLead.unsubscribe_review_hold.is_(False),
         CampaignLead.enrollment_status.in_(("active", "contacted")),
         or_(
             CampaignLead.interest_status.is_(None),

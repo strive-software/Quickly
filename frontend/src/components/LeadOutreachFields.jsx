@@ -4,7 +4,7 @@ import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 
 const inputClass = 'block w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 mt-1';
-export default function LeadOutreachFields({ lead }) {
+export default function LeadOutreachFields({ lead, onSaved }) {
   const [form, setForm] = useState(() => ({
     priority: lead.priority || 'normal', company: lead.company || '', job_title: lead.job_title || '',
     role_description: lead.role_description || '', apollo_id: lead.apollo_id || '',
@@ -21,6 +21,7 @@ export default function LeadOutreachFields({ lead }) {
       await api.patch(`/leads/${lead.id}`, payload);
       setSavedProfile({ ...form });
       setStatus('Saved');
+      onSaved?.();
     } catch (error) { setStatus(error.message || 'Could not save lead'); }
     finally { setBusy(false); }
   }

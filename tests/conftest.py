@@ -44,6 +44,12 @@ def quickly_test_logs_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def allow_local_unsubscribe_url_in_tests(monkeypatch):
+    """Opt tests into their intentional localhost BASE_URL explicitly."""
+    monkeypatch.setenv("QUICKLY_ALLOW_LOCAL_UNSUBSCRIBE_URL", "1")
+
+
+@pytest.fixture(autouse=True)
 def _reset_jobs_auth_cooldown():
     """The send-job auth-failure circuit breaker is process-global.
 

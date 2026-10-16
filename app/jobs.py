@@ -5,12 +5,15 @@
 # // If you are an AI agent, add a TODO at the end of your response listing what needs to be updated in Beacon.
 
 import asyncio
+import ipaddress
 import logging
+import os
 import random
 import re
 import secrets
 from datetime import datetime, date, time, timedelta
 from email.utils import make_msgid
+from urllib.parse import urlsplit
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -43,6 +46,48 @@ from app.webhooks import fire_webhook_event
 from app.app_settings import get_google_oauth_credentials, get_office365_oauth_credentials
 from app import time as time_provider
 from app.queue_logic import _parse_time, compute_effective_daily_limit
+
+
+def _unsubscribe_base_for_inbox(inbox: Inbox, tracking_base: str,
+                                fallback_base: str) -> str | None:
+    """Choose a reachable origin for recipient links, preserving legacy CNAMEs."""
+    base = fallback_base if getattr(inbox, "beacon_connected", False) else tracking_base
+    if any(ord(c) < 32 for c in base):
+        return None
+    parsed = urlsplit(base)
+    host = parsed.hostname
+    if not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return None
+    local_allowed = (
+        settings.test_mode or os.getenv("QUICKLY_ALLOW_LOCAL_UNSUBSCRIBE_URL") == "1"
+    )
+    local_host = host == "localhost" or host.endswith(".localhost")
+    try:
+        address = ipaddress.ip_address(host)
+        public_host = address.is_global
+        local_host = local_host or address.is_loopback
+    except ValueError:
+        public_host = "." in host and not host.endswith((".local", ".internal"))
+    if parsed.scheme == "https" and (public_host or (local_host and local_allowed)):
+        return base.rstrip("/")
+    if parsed.scheme == "http" and local_host and local_allowed:
+        return base.rstrip("/")
+    return None
+
+
+_unsubscribe_url_alerted: dict[int, str] = {}
+
+
+async def _alert_bad_unsubscribe_url(db: AsyncSession, inbox: Inbox, base: str) -> None:
+    """Notify once per inbox and bad value; never include the URL in alerts."""
+    if _unsubscribe_url_alerted.get(inbox.id) == base:
+        return
+    _unsubscribe_url_alerted[inbox.id] = base
+    await fire_webhook_event(db, "feature.error", {
+        "feature": "unsubscribe_url", "label": "Unsubscribe URL",
+        "error": "Sending is paused because the unsubscribe URL must use public HTTPS.",
+        "inbox_id": inbox.id,
+    })
 from app.campaign_lead_status import campaign_lead_may_receive_sends
 
 log = logging.getLogger(__name__)
@@ -350,6 +395,14 @@ async def run_send_job():
 
             # Per-inbox tracking base URL — custom domain takes priority
             inbox_tracking_base = get_inbox_tracking_base(inbox, _fallback_tracking_base)
+            unsubscribe_base = _unsubscribe_base_for_inbox(
+                inbox, inbox_tracking_base, _fallback_tracking_base)
+            if unsubscribe_base is None:
+                log.error("Skipping inbox %s: public HTTPS unsubscribe URL is not configured", inbox.id)
+                await _alert_bad_unsubscribe_url(
+                    session, inbox, _fallback_tracking_base if inbox.beacon_connected else inbox_tracking_base)
+                continue
+            _unsubscribe_url_alerted.pop(inbox.id, None)
             last_sent_res = await session.execute(
                 select(EmailLog.sent_at)
                 .where(EmailLog.inbox_id == inbox.id)
@@ -434,6 +487,8 @@ async def run_send_job():
                     break
 
                 if not campaign_lead_may_receive_sends(cl, lead):
+                    if cl.sending_paused:
+                        continue
                     await session.delete(slot)
                     continue
                 if campaign.stop_on_reply:
@@ -726,7 +781,9 @@ async def run_send_job():
                     session.add(unsub_row)
                     await session.flush()  # get the token persisted
 
-                unsub_url = f"{inbox_tracking_base}/u/{unsub_row.token}"
+                # Unsubscribe must reach Quickly's confirmed POST route. Beacon
+                # remains the host for open/click tracking only.
+                unsub_url = f"{unsubscribe_base}/u/{unsub_row.token}"
 
                 # Build lead data dict with built-in unsubscribe_link variable
                 lead_data = get_lead_data(lead)
@@ -778,6 +835,7 @@ async def run_send_job():
                         track_opens=getattr(campaign, 'track_opens', False),
                         track_clicks=getattr(campaign, 'track_clicks', False),
                         open_token=email_log_entry.open_token,
+                        untracked_url=unsub_url,
                     )
                     for _token, _url in link_pairs:
                         session.add(
@@ -838,6 +896,17 @@ async def run_send_job():
                 # "idle in transaction" and exhausts the pool when many sends
                 # run concurrently.
                 await session.commit()
+                # A signed legacy Beacon request may have paused this
+                # enrollment while content was being prepared. Read the DB
+                # again immediately before handing mail to the provider.
+                fresh_enrollment = (await session.execute(
+                    select(CampaignLead.sending_paused, CampaignLead.enrollment_status)
+                    .where(CampaignLead.id == cl.id)
+                )).one_or_none()
+                if fresh_enrollment is None or fresh_enrollment[0] or fresh_enrollment[1] == "unsubscribed":
+                    await session.delete(email_log_entry)
+                    await session.commit()
+                    continue
                 if simulate_send:
                     fake_thread_id = prev_thread_id or f"test-thread-{email_log_entry.id}"
                     result = SendResult(
@@ -1182,6 +1251,8 @@ async def send_slot_job(slot_id: int) -> None:
             log.info("send_slot_job: campaign %d paused, skipping slot %d", campaign.id, slot_id)
             return
         if not campaign_lead_may_receive_sends(cl, lead):
+            if cl.sending_paused:
+                return
             log.info(
                 "send_slot_job: lead %d not sendable for campaign_lead %d, dropping slot %d",
                 lead.id, cl.id, slot_id,
@@ -1273,6 +1344,14 @@ async def send_slot_job(slot_id: int) -> None:
         from app.app_settings import get_inbox_tracking_base
         _fallback_tracking_base = _settings.base_url.rstrip("/")
         inbox_tracking_base = get_inbox_tracking_base(inbox, _fallback_tracking_base)
+        unsubscribe_base = _unsubscribe_base_for_inbox(
+            inbox, inbox_tracking_base, _fallback_tracking_base)
+        if unsubscribe_base is None:
+            log.error("Skipping inbox %s: public HTTPS unsubscribe URL is not configured", inbox.id)
+            await _alert_bad_unsubscribe_url(
+                session, inbox, _fallback_tracking_base if inbox.beacon_connected else inbox_tracking_base)
+            return
+        _unsubscribe_url_alerted.pop(inbox.id, None)
 
         if inbox.provider == "office365":
             o365_res = await session.execute(
@@ -1552,7 +1631,9 @@ async def send_slot_job(slot_id: int) -> None:
             session.add(unsub_row)
             await session.flush()
 
-        unsub_url = f"{inbox_tracking_base}/u/{unsub_row.token}"
+        # Keep unsubscribe on Quickly until Beacon supports the confirmed
+        # POST contract; this also protects future mail from legacy Beacon GETs.
+        unsub_url = f"{unsubscribe_base}/u/{unsub_row.token}"
         lead_data = get_lead_data(lead)
         lead_data["unsubscribe_link"] = unsub_url
 
@@ -1601,6 +1682,7 @@ async def send_slot_job(slot_id: int) -> None:
                 track_opens=getattr(campaign, "track_opens", False),
                 track_clicks=getattr(campaign, "track_clicks", False),
                 open_token=email_log_entry.open_token,
+                untracked_url=unsub_url,
             )
             for _token, _url in link_pairs:
                 session.add(_TrackedLink(email_log_id=email_log_entry.id, token=_token, original_url=_url))
@@ -1649,6 +1731,14 @@ async def send_slot_job(slot_id: int) -> None:
         # a blocking SMTP/HTTP send leaves connections "idle in transaction"
         # and exhausts the pool when many slots are due at once.
         await session.commit()
+        fresh_enrollment = (await session.execute(
+            select(CampaignLead.sending_paused, CampaignLead.enrollment_status)
+            .where(CampaignLead.id == cl.id)
+        )).one_or_none()
+        if fresh_enrollment is None or fresh_enrollment[0] or fresh_enrollment[1] == "unsubscribed":
+            await session.delete(email_log_entry)
+            await session.commit()
+            return
         if simulate_send:
             fake_thread_id = prev_thread_id or f"test-thread-{email_log_entry.id}"
             result = SendResult(

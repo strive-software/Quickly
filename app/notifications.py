@@ -79,7 +79,7 @@ def build_notification(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
     elif event_type == "lead.unsubscribed":
         lead_email = data.get("lead_email", "unknown")
         title = f"Lead unsubscribed — {lead_email}"
-        message = f"**{lead_email}** clicked the unsubscribe link."
+        message = f"**{lead_email}** was unsubscribed from this campaign."
     elif event_type == "lead.status_changed":
         lead_email = data.get("lead_email", "?")
         old_s = data.get("old_status", "—")

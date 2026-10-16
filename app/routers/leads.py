@@ -10,10 +10,15 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, exists, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.campaign_lead_status import LEAD_INTERESTS, normalize_enrollment_status, normalize_interest
+from app.campaign_lead_status import (
+    LEAD_INTERESTS, VERIFICATION_BLOCKS_SEND, campaign_lead_may_receive_sends,
+    normalize_enrollment_status, normalize_interest,
+)
+from app.crm_revisions import require_revision, revision
 from app.database import get_db
 from app.lead_inbox_resolution import from_inbox_email_by_lead_campaign
 from app.models import (
@@ -24,6 +29,15 @@ from app.models import (
     Lead,
     LeadReply,
     Office365Message,
+    LeadResearch,
+    PersonalizedEmailDraft,
+    CustomEmailOverride,
+    QueueSlot,
+    Sequence,
+    Inbox,
+    UnsubscribeAudit,
+    UnconfirmedUnsubscribeRequest,
+    ManualStepRecord,
 )
 from app.schemas import (
     LeadBulkDeleteRequest,
@@ -31,17 +45,53 @@ from app.schemas import (
     LeadBulkRecoverRequest,
     LeadBulkStatusRequest,
     LeadCreate,
+    LeadCreateWithCampaign,
     LeadRecoverRequest,
     LeadResponse,
     LeadUpdate,
     LeadProfile,
     LeadCampaignInfo,
     MarkReplied,
+    LeadResearchWrite,
+    UnconfirmedUnsubscribeReview,
 )
 
 log = logging.getLogger("quickly.routes")
 
 router = APIRouter(prefix="/api/leads", tags=["leads"])
+
+
+def _verification_error(lead: Lead) -> str | None:
+    result = lead.email_verification_result
+    if lead.email_verification_status != "verification_error" or not isinstance(result, dict):
+        return None
+    value = result.get("error")
+    return value[:300] if isinstance(value, str) else None
+
+
+def _email_hold_status(lead: Lead, cl: CampaignLead, campaign: Campaign,
+                       *, replied: bool, inbox_paused: bool = False) -> tuple[str | None, str | None]:
+    """Explain why an email step with or without a stale slot cannot send."""
+    if (lead.status or "").lower() in ("unsubscribed", "bounced", "invalid"):
+        return "blocked", "lead_status"
+    enrollment = cl.enrollment_status or "active"
+    if enrollment in ("completed", "bounced", "unsubscribed", "wrong_person"):
+        return ("completed" if enrollment == "completed" else "blocked"), "enrollment_status"
+    if lead.email_verification_status in VERIFICATION_BLOCKS_SEND:
+        return "blocked", "email_verification"
+    if cl.interest_status in ("not_interested", "out_of_office"):
+        return "blocked", "interest"
+    if campaign.stop_on_reply and replied:
+        return "blocked", "replied"
+    if cl.sending_paused:
+        return "paused", "enrollment_paused"
+    if campaign.paused:
+        return "paused", "campaign_paused"
+    if inbox_paused:
+        return "paused", "inbox_paused"
+    if not campaign_lead_may_receive_sends(cl, lead):
+        return "blocked", "enrollment_status"
+    return None, None
 
 
 async def _engagement_pair_sets(
@@ -114,6 +164,7 @@ def _lead_to_response(
         custom_data=lead.custom_data if isinstance(lead.custom_data, dict) else {},
         provider=lead.provider,
         email_verification_status=lead.email_verification_status,
+        verification_error=_verification_error(lead),
         created_at=lead.created_at,
         campaigns=camps,
         interactions=interactions or [],
@@ -236,8 +287,16 @@ def _build_leads_stmt(
 
 
 async def _reset_all_enrollments_for_lead(db: AsyncSession, lead_id: int) -> None:
+    open_requests = await db.scalars(select(UnconfirmedUnsubscribeRequest.campaign_id).where(
+        UnconfirmedUnsubscribeRequest.lead_id == lead_id,
+        UnconfirmedUnsubscribeRequest.reviewed_at.is_(None),
+    ))
+    open_campaign_ids = set(open_requests.all())
     res = await db.execute(select(CampaignLead).where(CampaignLead.lead_id == lead_id))
     for cl in res.scalars().all():
+        if (cl.enrollment_status == "unsubscribed" or cl.unsubscribe_review_hold
+                or cl.campaign_id in open_campaign_ids):
+            continue
         cl.enrollment_status = "active"
         cl.interest_status = None
         cl.sending_paused = False
@@ -348,6 +407,44 @@ async def _fetch_lead_interactions(db: AsyncSession, lead_id: int) -> list[dict]
                 "campaign_public_id": pub,
             }
         )
+
+    audit_rows = await db.execute(
+        select(UnsubscribeAudit, Campaign.name, Campaign.public_id)
+        .join(Campaign, UnsubscribeAudit.campaign_id == Campaign.id)
+        .where(UnsubscribeAudit.lead_id == lead_id)
+    )
+    for audit, cname, pub in audit_rows.all():
+        events.append({
+            "direction": "inbound", "kind": "unsubscribed",
+            "at": revision(audit.occurred_at),
+            "campaign_id": audit.campaign_id, "campaign_name": cname,
+            "campaign_public_id": pub, "mechanism": audit.mechanism,
+            "request_method": audit.request_method,
+            "ip_address": audit.ip_address, "user_agent": audit.user_agent,
+        })
+
+    hold_rows = await db.execute(select(CampaignLead.campaign_id, CampaignLead.unsubscribe_review_hold).where(
+        CampaignLead.lead_id == lead_id))
+    current_holds = dict(hold_rows.all())
+    pending_rows = await db.execute(
+        select(UnconfirmedUnsubscribeRequest, Campaign.name, Campaign.public_id)
+        .join(Campaign, UnconfirmedUnsubscribeRequest.campaign_id == Campaign.id)
+        .where(UnconfirmedUnsubscribeRequest.lead_id == lead_id)
+    )
+    for request, cname, pub in pending_rows.all():
+        events.append({
+            "direction": "inbound", "kind": "unconfirmed_unsubscribe",
+            "request_id": request.id, "at": revision(request.occurred_at),
+            "last_seen_at": revision(request.last_seen_at),
+            "request_count": request.request_count,
+            "campaign_id": request.campaign_id, "campaign_name": cname,
+            "campaign_public_id": pub,
+            "ip_address": request.ip_address, "user_agent": request.user_agent,
+            "paused_by_request": request.paused_by_request,
+            "unsubscribe_review_hold": bool(current_holds.get(request.campaign_id)),
+            "review_decision": request.review_decision,
+            "reviewed_at": revision(request.reviewed_at),
+        })
 
     events.sort(key=lambda e: (e.get("at") or "", e.get("direction", "")))
     return events
@@ -468,6 +565,45 @@ async def _fetch_lead_interactions_batch(
             }
         )
 
+    audit_rows = await db.execute(
+        select(UnsubscribeAudit, Campaign.name, Campaign.public_id)
+        .join(Campaign, UnsubscribeAudit.campaign_id == Campaign.id)
+        .where(UnsubscribeAudit.lead_id.in_(lead_ids))
+    )
+    for audit, cname, pub in audit_rows.all():
+        events_map[audit.lead_id].append({
+            "direction": "inbound", "kind": "unsubscribed",
+            "at": revision(audit.occurred_at),
+            "campaign_id": audit.campaign_id, "campaign_name": cname,
+            "campaign_public_id": pub, "mechanism": audit.mechanism,
+            "request_method": audit.request_method,
+            "ip_address": audit.ip_address, "user_agent": audit.user_agent,
+        })
+
+    hold_rows = await db.execute(select(
+        CampaignLead.lead_id, CampaignLead.campaign_id, CampaignLead.unsubscribe_review_hold,
+    ).where(CampaignLead.lead_id.in_(lead_ids)))
+    current_holds = {(lead_id, campaign_id): bool(hold) for lead_id, campaign_id, hold in hold_rows.all()}
+    pending_rows = await db.execute(
+        select(UnconfirmedUnsubscribeRequest, Campaign.name, Campaign.public_id)
+        .join(Campaign, UnconfirmedUnsubscribeRequest.campaign_id == Campaign.id)
+        .where(UnconfirmedUnsubscribeRequest.lead_id.in_(lead_ids))
+    )
+    for request, cname, pub in pending_rows.all():
+        events_map[request.lead_id].append({
+            "direction": "inbound", "kind": "unconfirmed_unsubscribe",
+            "request_id": request.id, "at": revision(request.occurred_at),
+            "last_seen_at": revision(request.last_seen_at),
+            "request_count": request.request_count,
+            "campaign_id": request.campaign_id, "campaign_name": cname,
+            "campaign_public_id": pub,
+            "ip_address": request.ip_address, "user_agent": request.user_agent,
+            "paused_by_request": request.paused_by_request,
+            "unsubscribe_review_hold": current_holds.get((request.lead_id, request.campaign_id), False),
+            "review_decision": request.review_decision,
+            "reviewed_at": revision(request.reviewed_at),
+        })
+
     for lid in lead_ids:
         events_map[lid].sort(key=lambda e: (e.get("at") or "", e.get("direction", "")))
 
@@ -490,7 +626,8 @@ async def _mutate_lead_recover(lead: Lead, norm: str, verify: bool) -> None:
     from app.email_verification import PENDING
 
     lead.email = norm
-    lead.status = "active"
+    if lead.status != "unsubscribed":
+        lead.status = "active"
     lead.provider = None
     if verify:
         lead.email_verification_status = PENDING
@@ -512,8 +649,8 @@ async def _finalize_lead_recovery(
         return
     if verify:
         from app.routers.campaigns import _run_background_verification
-
-        asyncio.create_task(_run_background_verification(lead_ids))
+        await db.commit()
+        background_tasks.add_task(_run_background_verification, lead_ids)
     else:
         await db.commit()
         from app.routers.schedule import enqueue_global_recalculate
@@ -751,14 +888,10 @@ async def bulk_recover_leads(
     if not body.items:
         return {"recovered": 0, "errors": [], "recovered_ids": []}
 
-    from app.app_settings import EMAIL_VERIFICATION_ENABLED, get_setting
-
-    enabled = (await get_setting(db, EMAIL_VERIFICATION_ENABLED) or "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    verify = body.verify_email and enabled
+    verify = body.verify_email
+    if verify:
+        from app.routers.campaigns import require_verification_ready
+        await require_verification_ready(db)
 
     errors: list[dict] = []
     recovered_ids: list[int] = []
@@ -846,11 +979,21 @@ async def import_recover_csv(
 
 
 @router.post("", response_model=LeadResponse)
-async def create_lead(data: LeadCreate, db: AsyncSession = Depends(get_db)):
-    raise HTTPException(
-        405,
-        "Creating leads without a campaign is not allowed; use POST /api/campaigns/{campaign_id}/leads",
-    )
+async def create_lead(data: LeadCreateWithCampaign, background_tasks: BackgroundTasks,
+                      db: AsyncSession = Depends(get_db)):
+    """Create one lead in a campaign, with automatic verification before sending."""
+    from app.routers.campaigns import bulk_add_leads_to_campaign
+    from app.schemas import CampaignLeadAdd
+
+    campaign_id = data.campaign_id
+    entry = CampaignLeadAdd(**data.model_dump(exclude={"campaign_id"}, exclude_unset=True))
+    result = await bulk_add_leads_to_campaign(campaign_id, [entry], skip_duplicates=False,
+                                              background_tasks=background_tasks, db=db)
+    if result["added"] == 0:
+        if result["already_enrolled"]:
+            raise HTTPException(409, "Lead is already enrolled in this campaign")
+        raise HTTPException(400, result["results"][0].get("detail", "Lead could not be added"))
+    return await get_lead(result["results"][0]["lead_id"], db)
 
 
 @router.post("/mark-replied")
@@ -870,6 +1013,246 @@ async def mark_lead_replied(
         return {"ok": True}
     db.add(LeadReply(lead_id=lead_id, campaign_id=campaign_id))
     return {"ok": True}
+
+
+@router.get("/{lead_id}/research")
+async def get_lead_research(lead_id: int, db: AsyncSession = Depends(get_db)):
+    if await db.scalar(select(Lead.id).where(Lead.id == lead_id)) is None:
+        raise HTTPException(404, "Lead not found")
+    row = await db.scalar(select(LeadResearch).where(LeadResearch.lead_id == lead_id))
+    return {"lead_id": lead_id, "summary": row.summary if row else "",
+            "sources": row.sources if row else [],
+            "updated_at": revision(row.updated_at) if row else None}
+
+
+@router.post("/{lead_id}/verify")
+async def retry_lead_verification(lead_id: int, background_tasks: BackgroundTasks,
+                                  db: AsyncSession = Depends(get_db)):
+    """Retry an unverified, pending, or failed address without rechecking valid leads."""
+    from app.routers.campaigns import _run_background_verification, require_verification_ready
+    lead = await db.scalar(select(Lead).where(Lead.id == lead_id).with_for_update())
+    if lead is None:
+        raise HTTPException(404, "Lead not found")
+    if lead.email_verification_status not in (None, "pending", "verification_error"):
+        raise HTTPException(409, "Lead has a cached verification result; use explicit reverify")
+    await require_verification_ready(db)
+    lead.email_verification_status = "pending"
+    lead.email_verification_result = None
+    await db.commit()
+    background_tasks.add_task(_run_background_verification, [lead_id])
+    return {"ok": True, "queued": 1, "verification_status": "pending"}
+
+
+@router.post("/{lead_id}/unconfirmed-unsubscribes/{request_id}/review")
+async def review_unconfirmed_unsubscribe(
+    lead_id: int, request_id: int, payload: UnconfirmedUnsubscribeReview,
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve a signed legacy Beacon request without treating a GET as consent."""
+    from app.tracking_events import confirm_unsubscribe_request, emit_unsubscribe_webhooks
+
+    request = await db.scalar(select(UnconfirmedUnsubscribeRequest).where(
+        UnconfirmedUnsubscribeRequest.id == request_id,
+        UnconfirmedUnsubscribeRequest.lead_id == lead_id,
+    ))
+    if request is None:
+        raise HTTPException(404, "Unconfirmed unsubscribe request not found")
+    # Match legacy ingest's lock order: enrollment first, request second.
+    enrollment = await db.scalar(select(CampaignLead).where(
+        CampaignLead.lead_id == lead_id,
+        CampaignLead.campaign_id == request.campaign_id,
+    ).with_for_update())
+    request = await db.scalar(select(UnconfirmedUnsubscribeRequest).where(
+        UnconfirmedUnsubscribeRequest.id == request_id,
+        UnconfirmedUnsubscribeRequest.lead_id == lead_id,
+    ).with_for_update().execution_options(populate_existing=True))
+    if request is None:
+        raise HTTPException(404, "Unconfirmed unsubscribe request not found")
+    if request.reviewed_at is not None:
+        raise HTTPException(409, "Request has already been reviewed")
+    old_status = None
+    if payload.decision == "accepted":
+        if enrollment is None:
+            raise HTTPException(409, "Lead is no longer enrolled in this campaign")
+        old_status = await confirm_unsubscribe_request(db, request)
+    request.review_decision = payload.decision
+    request.reviewed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.commit()
+    if old_status is not None:
+        await emit_unsubscribe_webhooks(db, lead_id, request.campaign_id,
+                                        old_status=old_status, mechanism="operator_confirmation")
+        await db.commit()
+    return {"ok": True, "request_id": request_id, "decision": payload.decision,
+            "reviewed_at": revision(request.reviewed_at)}
+
+
+@router.put("/{lead_id}/research")
+async def put_lead_research(lead_id: int, payload: LeadResearchWrite, db: AsyncSession = Depends(get_db)):
+    if await db.scalar(select(Lead.id).where(Lead.id == lead_id)) is None:
+        raise HTTPException(404, "Lead not found")
+    row = await db.scalar(select(LeadResearch).where(LeadResearch.lead_id == lead_id).with_for_update())
+    require_revision(row.updated_at if row else None, payload.expected_updated_at)
+    if row is None:
+        row = LeadResearch(lead_id=lead_id)
+        db.add(row)
+    row.summary = payload.summary
+    row.sources = [source.model_dump() for source in payload.sources]
+    row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Research was created concurrently; reload before saving") from None
+    return {"lead_id": lead_id, "summary": row.summary, "sources": row.sources,
+            "updated_at": revision(row.updated_at)}
+
+
+@router.get("/{lead_id}/emails")
+async def get_lead_emails(
+    lead_id: int, campaign_id: int | None = None, db: AsyncSession = Depends(get_db),
+):
+    """Sent details and every email sequence step across a lead's enrollments."""
+    from app.routers.schedule import _resolve_scheduled_content, _resolve_content
+
+    lead = await db.scalar(select(Lead).where(Lead.id == lead_id))
+    if lead is None:
+        raise HTTPException(404, "Lead not found")
+    enroll_stmt = select(CampaignLead, Campaign).join(Campaign, CampaignLead.campaign_id == Campaign.id).where(CampaignLead.lead_id == lead_id)
+    if campaign_id is not None:
+        enroll_stmt = enroll_stmt.where(CampaignLead.campaign_id == campaign_id)
+    enrollments = (await db.execute(enroll_stmt)).all()
+    items: list[dict] = []
+    included_log_ids: set[int] = set()
+    for cl, campaign in enrollments:
+        from app.queue_logic import manual_step_resolved
+        all_steps = (await db.execute(select(Sequence).where(Sequence.campaign_id == campaign.id))).scalars().all()
+        manual_steps = [step for step in all_steps if step.sequence_type == "linkedin"]
+        manual_records = {record.sequence_id: record for record in (await db.execute(
+            select(ManualStepRecord).where(ManualStepRecord.campaign_lead_id == cl.id)
+        )).scalars().all()}
+        has_reply = await db.scalar(select(LeadReply.id).where(
+            LeadReply.lead_id == lead_id, LeadReply.campaign_id == campaign.id).limit(1)) is not None
+        sequences = (await db.execute(
+            select(Sequence).options(selectinload(Sequence.variants))
+            .where(Sequence.campaign_id == campaign.id, Sequence.sequence_type != "linkedin")
+            .order_by(Sequence.position)
+        )).scalars().all()
+        slots = {slot.sequence_index: (slot, inbox) for slot, inbox in (await db.execute(
+            select(QueueSlot, Inbox).join(Inbox, QueueSlot.inbox_id == Inbox.id)
+            .where(QueueSlot.campaign_lead_id == cl.id)
+        )).all()}
+        sent = (await db.execute(select(EmailLog, Inbox.email)
+            .outerjoin(Inbox, EmailLog.inbox_id == Inbox.id)
+            .where(EmailLog.lead_id == lead_id, EmailLog.campaign_id == campaign.id)
+            .order_by(EmailLog.sent_at.desc()))).all()
+        sent_by_step: dict[int, list] = {}
+        for email_log, inbox_email in sent:
+            sent_by_step.setdefault(email_log.sequence_index, []).append((email_log, inbox_email))
+        overrides = {o.sequence_id: o for o in (await db.execute(
+            select(CustomEmailOverride).where(CustomEmailOverride.campaign_lead_id == cl.id)
+        )).scalars().all()}
+        drafts = {d.sequence_id: d for d in (await db.execute(
+            select(PersonalizedEmailDraft).where(PersonalizedEmailDraft.campaign_lead_id == cl.id)
+        )).scalars().all()}
+        for sequence in sequences:
+            base = {"campaign_id": campaign.id, "campaign_name": campaign.name,
+                    "sequence_id": sequence.id, "sequence_index": sequence.position,
+                    "sequence_type": sequence.sequence_type, "to_email": lead.email}
+            had_sent = sequence.position in sent_by_step
+            for email_log, inbox_email in sent_by_step.pop(sequence.position, []):
+                included_log_ids.add(email_log.id)
+                items.append({**base, "kind": "sent", "status": "sent", "log_id": email_log.id,
+                    "subject": email_log.subject or "", "body": email_log.body or "",
+                    "is_html": bool(email_log.is_html), "from_email": inbox_email,
+                    "sent_at": revision(email_log.sent_at),
+                    "scheduled_at": None, "editable": False, "draft": None, "override": None,
+                    "opened": email_log.opened, "clicked": email_log.clicked})
+            if sequence.position in slots:
+                slot, inbox = slots[sequence.position]
+                content = await _resolve_scheduled_content(db, slot, sequence, lead, cl, campaign, inbox)
+                scheduled_at = revision(slot.scheduled_date)
+                from_email = inbox.email
+            else:
+                content = await _resolve_content(db, sequence, lead, cl, campaign, None)
+                scheduled_at = None
+                from_email = None
+            hold, status_reason = _email_hold_status(
+                lead, cl, campaign, replied=has_reply,
+                inbox_paused=bool(slots[sequence.position][1].paused) if sequence.position in slots else False,
+            )
+            if hold:
+                status = hold
+            elif any(step.position < sequence.position and not manual_step_resolved(step, manual_records.get(step.id))
+                     for step in manual_steps):
+                status, status_reason = "manual_wait", "manual_step"
+            elif sequence.sequence_type == "personalized" and sequence.id not in overrides:
+                status, status_reason = ("draft" if sequence.id in drafts else "needs_writing"), "custom_email"
+            elif cl.enrollment_status == "needs_custom_email":
+                status, status_reason = "needs_writing", "custom_email"
+            else:
+                status = "scheduled" if sequence.position in slots else "awaiting_schedule"
+            if sequence.position in slots or not had_sent:
+                draft = drafts.get(sequence.id)
+                override = overrides.get(sequence.id)
+                if draft is not None:
+                    editing_source = {"subject": draft.subject, "body": draft.body,
+                                      "is_html": draft.is_html}
+                elif override is not None:
+                    editing_source = {"subject": override.subject, "body": override.body,
+                                      "is_html": override.is_html}
+                else:
+                    editing_source = {
+                        "subject": sequence.fallback_subject or sequence.subject,
+                        "body": sequence.fallback_body or sequence.body,
+                        "is_html": sequence.is_html,
+                    }
+                reason_text = {
+                    "lead_status": f"Lead status: {lead.status}",
+                    "enrollment_status": f"Enrollment status: {cl.enrollment_status}",
+                    "email_verification": _verification_error(lead) or
+                        f"Email verification: {lead.email_verification_status or 'pending'}",
+                    "interest": f"Lead interest: {cl.interest_status}",
+                    "replied": "Lead replied; campaign stops on reply",
+                    "enrollment_paused": "Sending paused for this lead",
+                    "campaign_paused": "Campaign paused",
+                    "inbox_paused": "Sending inbox paused",
+                    "manual_step": "Waiting for a manual LinkedIn step",
+                    "custom_email": "Personalized copy awaits release",
+                }.get(status_reason)
+                items.append({**base, "kind": "pending", "status": status,
+                    "subject": content["subject"], "body": content["body"], "is_html": content["is_html"],
+                    "from_email": from_email, "scheduled_at": scheduled_at, "sent_at": None,
+                    "status_reason": status_reason,
+                    "reason": reason_text,
+                    "editable": sequence.sequence_type == "personalized" and cl.enrollment_status not in
+                        ("completed", "bounced", "unsubscribed", "wrong_person"),
+                    "editing_source": editing_source if sequence.sequence_type == "personalized" else None,
+                    "draft": {"subject": draft.subject, "body": draft.body, "is_html": draft.is_html,
+                              "updated_at": revision(draft.updated_at)} if draft else None,
+                    "override": {"subject": override.subject, "body": override.body, "is_html": override.is_html} if override else None,
+                    "variant_id": content.get("variant_id"), "slot_id": slots[sequence.position][0].id if sequence.position in slots else None})
+    historical_stmt = (select(EmailLog, Campaign.name, Inbox.email)
+        .join(Campaign, EmailLog.campaign_id == Campaign.id)
+        .outerjoin(Inbox, EmailLog.inbox_id == Inbox.id)
+        .where(EmailLog.lead_id == lead_id))
+    if campaign_id is not None:
+        historical_stmt = historical_stmt.where(EmailLog.campaign_id == campaign_id)
+    for email_log, campaign_name, inbox_email in (await db.execute(historical_stmt)).all():
+        if email_log.id in included_log_ids:
+            continue
+        items.append({"campaign_id": email_log.campaign_id, "campaign_name": campaign_name,
+            "sequence_id": None, "sequence_index": email_log.sequence_index,
+            "sequence_type": "unknown", "to_email": lead.email,
+            "kind": "sent", "status": "sent", "log_id": email_log.id,
+            "subject": email_log.subject or "", "body": email_log.body or "",
+            "is_html": bool(email_log.is_html), "from_email": inbox_email,
+            "sent_at": revision(email_log.sent_at),
+            "scheduled_at": None, "editable": False, "draft": None, "override": None,
+            "opened": email_log.opened, "clicked": email_log.clicked})
+    items.sort(key=lambda item: (item["campaign_id"], item["sequence_index"],
+                                 0 if item["kind"] == "sent" else 1,
+                                 item.get("sent_at") or ""))
+    return {"items": items}
 
 
 @router.get("/{lead_id}", response_model=LeadResponse)
@@ -977,14 +1360,10 @@ async def recover_lead(
     if dup.scalar_one_or_none():
         raise HTTPException(409, "Another lead already uses this email address")
 
-    from app.app_settings import EMAIL_VERIFICATION_ENABLED, get_setting
-
-    enabled = (await get_setting(db, EMAIL_VERIFICATION_ENABLED) or "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    verify = body.verify_email and enabled
+    verify = body.verify_email
+    if verify:
+        from app.routers.campaigns import require_verification_ready
+        await require_verification_ready(db)
 
     await _mutate_lead_recover(lead, norm, verify)
     await _after_lead_recovered(db, lead_id)

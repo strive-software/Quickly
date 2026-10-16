@@ -1,4 +1,6 @@
 import LeadName from '../components/LeadName';
+import LeadDetailsPanel from '../components/LeadDetailsPanel';
+import RetryLeadVerification from '../components/RetryLeadVerification';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -95,6 +97,7 @@ export default function Leads() {
   };
 
   const [leads, setLeads] = useState([]);
+  const [detailLeadId, setDetailLeadId] = useState(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [interestFilter, setInterestFilter] = useState('all');
@@ -494,8 +497,11 @@ export default function Leads() {
                   aria-label="Select all"
                 />
               </th>
+              <th className="p-2">#</th>
               <th className="p-2">Email</th>
               <th className="p-2">Name</th>
+              <th className="p-2">Job title</th>
+              <th className="p-2">Company</th>
               <th className="p-2">Verify / enrollments</th>
               <th className="p-2">Campaigns</th>
               <th className="p-2">Sending inbox</th>
@@ -507,12 +513,12 @@ export default function Leads() {
           <tbody>
             {leads.length === 0 ? (
               <tr>
-                <td colSpan={tab === TAB_BOUNCED ? 9 : 7} className="p-8 text-center text-gray-500">
+                <td colSpan={tab === TAB_BOUNCED ? 12 : 10} className="p-8 text-center text-gray-500">
                   No leads match this view.
                 </td>
               </tr>
             ) : (
-              leads.map((l) => (
+              leads.map((l, index) => (
                 <tr key={l.id} className="even:bg-gray-50 dark:even:bg-gray-800/40 border-b border-gray-100">
                   <td className="p-2 align-top">
                     <input
@@ -523,12 +529,15 @@ export default function Leads() {
                       aria-label={`Select ${l.email}`}
                     />
                   </td>
+                  <td className="p-2 align-top text-gray-400">{index + 1}</td>
                   <td className="p-2 align-top font-mono text-xs">
-                    <Link to={`/leads/${l.id}`} className="text-teal-600 hover:underline">
+                    <button type="button" onClick={() => setDetailLeadId(l.id)} className="text-teal-600 hover:underline">
                       {l.email}
-                    </Link>
+                    </button>
                   </td>
                   <td className="p-2 align-top"><LeadName name={l.name} linkedinUrl={l.linkedin_url} /></td>
+                  <td className="p-2 align-top">{l.job_title || '—'}</td>
+                  <td className="p-2 align-top">{l.company || '—'}</td>
                   <td className="p-2 align-top">
                     <div className="flex flex-wrap gap-1">
                       {l.email_verification_status && (
@@ -541,6 +550,8 @@ export default function Leads() {
                           verify: {l.email_verification_status}
                         </span>
                       )}
+                      {l.verification_error && <span role="status" className="max-w-xs text-xs text-red-700">Verification error: {l.verification_error}</span>}
+                      <RetryLeadVerification leadId={l.id} status={l.email_verification_status} onDone={loadLeads} />
                       {(l.campaigns || []).slice(0, 3).map((c) => (
                         <span
                           key={c.campaign_id}
@@ -620,6 +631,7 @@ export default function Leads() {
           </tbody>
         </table>
       </Card>
+      {detailLeadId != null && <LeadDetailsPanel leadId={detailLeadId} onClose={() => setDetailLeadId(null)} onSaved={loadLeads} />}
     </div>
   );
 }

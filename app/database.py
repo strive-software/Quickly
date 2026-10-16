@@ -223,6 +223,7 @@ async def _run_migrations(conn) -> None:
         "ALTER TABLE smtp_account ADD COLUMN IF NOT EXISTS last_send_at TIMESTAMP WITHOUT TIME ZONE NULL",
         # 2026-09-22: per-campaign RFC 8058 one-click unsubscribe toggle
         "ALTER TABLE campaign ADD COLUMN IF NOT EXISTS add_one_click_unsubscribe BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE campaign_lead ADD COLUMN IF NOT EXISTS unsubscribe_review_hold BOOLEAN NOT NULL DEFAULT FALSE",
         # Confirmed unsubscribe provenance (never stores URL tokens).
         """CREATE TABLE IF NOT EXISTS unsubscribe_audit (
             id SERIAL PRIMARY KEY,

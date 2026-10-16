@@ -251,6 +251,7 @@ async def _apply_confirmed_unsubscribe(
     if pending is not None:
         pending.reviewed_at = time_provider.utcnow()
         pending.review_decision = "confirmed"
+    cl.unsubscribe_review_hold = False
     old_status = cl.enrollment_status
     changed = old_status != "unsubscribed"
     if changed:

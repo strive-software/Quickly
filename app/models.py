@@ -307,6 +307,9 @@ class CampaignLead(Base):
     # Whether sending is paused for this specific campaign-lead pair
     # (e.g. auto-paused by AI classifier when marked not_interested)
     sending_paused = Column(Boolean, default=False, nullable=False)
+    # Durable hold for ambiguous signed Beacon unsubscribe events. Only an
+    # explicit per-enrollment review/resume action may lift it.
+    unsubscribe_review_hold = Column(Boolean, default=False, nullable=False)
     campaign = relationship("Campaign", back_populates="campaign_leads")
     lead = relationship("Lead", back_populates="campaign_leads")
     queue_slots = relationship("QueueSlot", back_populates="campaign_lead", cascade="all, delete-orphan", order_by="QueueSlot.sequence_index")

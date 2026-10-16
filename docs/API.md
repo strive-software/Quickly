@@ -457,7 +457,7 @@ Delete a variant. Existing email logs referencing the variant are preserved.
 
 ## Leads
 
-Leads represent contacts. **Creating a lead without enrolling them in a campaign is not supported** — use `POST /api/campaigns/{id}/leads` (or CSV import on a campaign) to create and enroll. The global **`/api/leads`** routes below are for listing, exporting, updating, deleting, and recovering leads across all campaigns (used by the **Leads** page in the app).
+Leads represent contacts. Creating a lead requires enrollment in a campaign; use `POST /api/leads` with `campaign_id`, `POST /api/campaigns/{id}/leads`, or campaign CSV import.
 
 ---
 
@@ -525,7 +525,7 @@ Set the same **enrollment status** on **every** `CampaignLead` row for each give
 
 #### `POST /api/leads/bulk-recover`
 
-Fix bounced/invalid (or any) leads: update **email**, set legacy lead row to **`active`**, **reset every enrollment** to `active` (clear interest, un-pause), clear **provider** so it can be re-detected, then either queue **one** background verification batch for all recovered IDs (when verification is enabled and `verify_email` is true) or run **one** full queue recalculation.
+Fix bounced/invalid leads: update **email**, restore eligible enrollments to `active`, clear **provider** so it can be re-detected, then either queue **one** background verification batch for all recovered IDs (`verify_email=true`) or run **one** full queue recalculation. Confirmed unsubscribes and unsubscribe review holds retain their status and pause.
 
 **Body:**
 
@@ -542,7 +542,7 @@ Fix bounced/invalid (or any) leads: update **email**, set legacy lead row to **`
 | Field | Type | Description |
 |---|---|---|
 | `items` | array | Each entry: `lead_id` (int), `email` (new address, normalized to lowercase). |
-| `verify_email` | bool | Default `true`. If the account has email verification enabled and this is `true`, recovered leads are marked pending and verified in the background; otherwise the queue is recalculated immediately. |
+| `verify_email` | bool | Default `true`. Requires a configured checker and marks recovered leads pending. If `false`, the queue is recalculated immediately. |
 
 **Response:**
 
@@ -626,7 +626,7 @@ Update lead fields. Setting **`enrollment_status`** applies to **all** enrollmen
 
 #### `POST /api/leads/{id}/recover`
 
-Update this lead’s **email**, set **`active`**, clear **provider**, then verify-or-recalc (same semantics as one row in **`bulk-recover`**).
+Update this lead’s **email**, preserve any unsubscribe state, clear **provider**, then verify-or-recalc (same semantics as one row in **`bulk-recover`**).
 
 **Body:**
 
@@ -1570,7 +1570,7 @@ Fetch available models for a provider. Pass `?api_key=<key>` to use an unsaved k
 
 ### `PATCH /api/campaigns/{id}/leads/{lead_id}`
 
-Update **enrollment status**, **interest**, and/or **sending_paused** for this campaign. Moving into a terminal enrollment (`bounced`, `unsubscribed`, `wrong_person`, `completed`) or setting interest to `not_interested` / `out_of_office` **clears queue slots**; clearing those (and unpausing) can **re-schedule** via `reserve_slots_for_new_leads_bulk`.
+Update **enrollment status**, **interest**, and/or **sending_paused** for this campaign. Moving into a terminal enrollment (`bounced`, `unsubscribed`, `wrong_person`, `completed`) or setting interest to `not_interested` / `out_of_office` **clears queue slots**; clearing those (and unpausing) can **re-schedule** via `reserve_slots_for_new_leads_bulk`. Unpausing returns **409** while an unsubscribe request awaits review or the enrollment is unsubscribed. A rejected request retains its pause until this explicit unpause action, which clears its review hold.
 
 **Body:**
 
@@ -1580,7 +1580,7 @@ Update **enrollment status**, **interest**, and/or **sending_paused** for this c
 | `interest` | string\|null | Same as `interest_status` (alias): `interested`, `not_interested`, `out_of_office`, `auto_reply`, or `""` to clear |
 | `sending_paused` | bool\|null | Manual pause |
 
-**Response:** `{"ok": true, "status": "active", "interest": "interested", "sending_paused": false}`
+**Response:** `{"ok": true, "status": "active", "interest": "interested", "sending_paused": false, "unsubscribe_review_hold": false}`
 
 ---
 
@@ -1633,6 +1633,8 @@ Register the caller's IP as a non-permanent known IP (auto-expires after 7 days)
 ## Email Verification
 
 Email verification checks newly created addresses before they are eligible for sending. They enter `pending`; existing leads keep their current verdict and live enrollments. Missing checker configuration or provider errors produce `verification_error` and a safe `verification_error` message on lead responses. Those addresses remain unscheduled until the checker is configured and `POST /api/leads/{id}/verify` retries them. Invalid and risky results remove queue slots.
+
+Explicit verification and recovery with `verify_email=true` return **503** before changing any existing lead when verification is disabled or required provider settings are missing. New leads still enter `pending` automatically; the background checker records a visible `verification_error` when unavailable.
 
 Supported providers: `mailtester_ninja` (requires API key) and `custom` (any HTTP endpoint).
 

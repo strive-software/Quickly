@@ -7,16 +7,21 @@ from sqlalchemy import select
 
 from app.models import (CustomEmailOverride, PersonalizedEmailDraft, UnsubscribeAudit,
                         UnconfirmedUnsubscribeRequest, LeadReply)
+from app.app_settings import (put_setting, EMAIL_VERIFICATION_ENABLED,
+                              EMAIL_VERIFICATION_API_KEY)
 from app.routers.campaigns import (save_custom_email_draft, release_custom_email_draft,
                                    bulk_add_leads_to_campaign, import_campaign_leads,
-                                   trigger_verification_for_campaign, write_custom_email)
+                                   trigger_verification_for_campaign, write_custom_email,
+                                   patch_campaign_lead)
 from app.routers.leads import (create_lead, get_lead_emails, get_lead_research,
                                put_lead_research, retry_lead_verification,
                                review_unconfirmed_unsubscribe,
-                               _fetch_lead_interactions)
+                               _fetch_lead_interactions, _reset_all_enrollments_for_lead,
+                               _mutate_lead_recover)
 from app.schemas import (CampaignLeadAdd, CustomEmailDraftWrite, CustomEmailWrite, DraftReleaseRequest,
                          LeadResearchWrite, LeadResearchSource, LeadCreateWithCampaign)
 from app.schemas import UnconfirmedUnsubscribeReview
+from app.schemas import CampaignLeadEnrollmentPatch
 from tests.conftest import (make_campaign, make_campaign_lead, make_lead, make_sequence,
                             make_inbox, make_queue_slot, make_email_log)
 
@@ -348,6 +353,8 @@ async def test_csv_import_automatically_queues_verification(session, monkeypatch
 
 
 async def test_explicit_verification_marks_failed_and_unverified_pending_before_dispatch(session):
+    await put_setting(session, EMAIL_VERIFICATION_ENABLED, "true")
+    await put_setting(session, EMAIL_VERIFICATION_API_KEY, "test-key")
     campaign = await make_campaign(session)
     lead = await make_lead(session)
     await make_campaign_lead(session, campaign.id, lead.id)
@@ -372,6 +379,8 @@ async def test_explicit_verification_marks_failed_and_unverified_pending_before_
 
 
 async def test_http_create_research_retry_and_email_routes(session, monkeypatch):
+    await put_setting(session, EMAIL_VERIFICATION_ENABLED, "true")
+    await put_setting(session, EMAIL_VERIFICATION_API_KEY, "test-key")
     import httpx
     from app.main import app
     from app.database import get_db
@@ -416,3 +425,70 @@ async def test_http_create_research_retry_and_email_routes(session, monkeypatch)
             assert campaign_retry.json()["queued"] == 1
     finally:
         app.dependency_overrides.clear()
+
+
+async def test_unsubscribe_review_hold_blocks_resume_and_recovery(session):
+    campaign = await make_campaign(session)
+    lead = await make_lead(session)
+    enrollment = await make_campaign_lead(session, campaign.id, lead.id)
+    enrollment.sending_paused = True
+    enrollment.unsubscribe_review_hold = True
+    request = UnconfirmedUnsubscribeRequest(lead_id=lead.id, campaign_id=campaign.id,
+                                            paused_by_request=True)
+    session.add(request)
+    await session.commit()
+
+    with pytest.raises(HTTPException) as open_error:
+        await patch_campaign_lead(campaign.id, lead.id,
+            CampaignLeadEnrollmentPatch(sending_paused=False), BackgroundTasks(), session)
+    assert open_error.value.status_code == 409
+    await _mutate_lead_recover(lead, "corrected@example.com", False)
+    await _reset_all_enrollments_for_lead(session, lead.id)
+    assert enrollment.sending_paused is True
+    assert enrollment.unsubscribe_review_hold is True
+
+    from datetime import datetime, timezone
+    request.review_decision = "rejected"
+    request.reviewed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await session.commit()
+    result = await patch_campaign_lead(campaign.id, lead.id,
+        CampaignLeadEnrollmentPatch(sending_paused=False), BackgroundTasks(), session)
+    assert result["unsubscribe_review_hold"] is False
+    assert enrollment.sending_paused is False
+
+
+async def test_recovery_preserves_confirmed_unsubscribe(session):
+    campaign = await make_campaign(session)
+    lead = await make_lead(session)
+    enrollment = await make_campaign_lead(session, campaign.id, lead.id)
+    lead.status = "unsubscribed"
+    enrollment.enrollment_status = "unsubscribed"
+    enrollment.sending_paused = True
+    await session.flush()
+    await _mutate_lead_recover(lead, "corrected@example.com", False)
+    await _reset_all_enrollments_for_lead(session, lead.id)
+    assert lead.status == "unsubscribed"
+    assert enrollment.enrollment_status == "unsubscribed"
+    assert enrollment.sending_paused is True
+
+
+async def test_explicit_verification_requires_config_before_mutation(session):
+    campaign = await make_campaign(session)
+    lead = await make_lead(session)
+    await make_campaign_lead(session, campaign.id, lead.id)
+    lead.email_verification_status = "verification_error"
+    lead.email_verification_result = {"error": "Previous failure"}
+    await session.commit()
+    with pytest.raises(HTTPException) as disabled:
+        await retry_lead_verification(lead.id, BackgroundTasks(), session)
+    assert disabled.value.status_code == 503
+    assert lead.email_verification_status == "verification_error"
+    assert lead.email_verification_result == {"error": "Previous failure"}
+
+    await put_setting(session, EMAIL_VERIFICATION_ENABLED, "true")
+    await session.commit()
+    with pytest.raises(HTTPException) as missing_key:
+        await trigger_verification_for_campaign(campaign.id, BackgroundTasks(), reverify=False, db=session)
+    assert missing_key.value.status_code == 503
+    assert lead.email_verification_status == "verification_error"
+    assert lead.email_verification_result == {"error": "Previous failure"}

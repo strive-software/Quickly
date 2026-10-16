@@ -59,8 +59,7 @@ def _unsubscribe_base_for_inbox(inbox: Inbox, tracking_base: str,
     if not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
         return None
     local_allowed = (
-        settings.test_mode or bool(os.getenv("TEST_DATABASE_URL"))
-        or os.getenv("QUICKLY_ALLOW_LOCAL_UNSUBSCRIBE_URL") == "1"
+        settings.test_mode or os.getenv("QUICKLY_ALLOW_LOCAL_UNSUBSCRIBE_URL") == "1"
     )
     local_host = host == "localhost" or host.endswith(".localhost")
     try:
@@ -74,6 +73,21 @@ def _unsubscribe_base_for_inbox(inbox: Inbox, tracking_base: str,
     if parsed.scheme == "http" and local_host and local_allowed:
         return base.rstrip("/")
     return None
+
+
+_unsubscribe_url_alerted: dict[int, str] = {}
+
+
+async def _alert_bad_unsubscribe_url(db: AsyncSession, inbox: Inbox, base: str) -> None:
+    """Notify once per inbox and bad value; never include the URL in alerts."""
+    if _unsubscribe_url_alerted.get(inbox.id) == base:
+        return
+    _unsubscribe_url_alerted[inbox.id] = base
+    await fire_webhook_event(db, "feature.error", {
+        "feature": "unsubscribe_url", "label": "Unsubscribe URL",
+        "error": "Sending is paused because the unsubscribe URL must use public HTTPS.",
+        "inbox_id": inbox.id,
+    })
 from app.campaign_lead_status import campaign_lead_may_receive_sends
 
 log = logging.getLogger(__name__)
@@ -385,7 +399,10 @@ async def run_send_job():
                 inbox, inbox_tracking_base, _fallback_tracking_base)
             if unsubscribe_base is None:
                 log.error("Skipping inbox %s: public HTTPS unsubscribe URL is not configured", inbox.id)
+                await _alert_bad_unsubscribe_url(
+                    session, inbox, _fallback_tracking_base if inbox.beacon_connected else inbox_tracking_base)
                 continue
+            _unsubscribe_url_alerted.pop(inbox.id, None)
             last_sent_res = await session.execute(
                 select(EmailLog.sent_at)
                 .where(EmailLog.inbox_id == inbox.id)
@@ -1331,7 +1348,10 @@ async def send_slot_job(slot_id: int) -> None:
             inbox, inbox_tracking_base, _fallback_tracking_base)
         if unsubscribe_base is None:
             log.error("Skipping inbox %s: public HTTPS unsubscribe URL is not configured", inbox.id)
+            await _alert_bad_unsubscribe_url(
+                session, inbox, _fallback_tracking_base if inbox.beacon_connected else inbox_tracking_base)
             return
+        _unsubscribe_url_alerted.pop(inbox.id, None)
 
         if inbox.provider == "office365":
             o365_res = await session.execute(

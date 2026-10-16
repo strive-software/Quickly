@@ -123,6 +123,7 @@ async def beacon_ingest(request: Request, db: AsyncSession = Depends(get_db)):
             pending.last_seen_at = now
             pending.request_count += 1
         cl.sending_paused = True
+        cl.unsubscribe_review_hold = True
         await db.commit()
         if created:
             await fire_webhook_event(db, "feature.error", {

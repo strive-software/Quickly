@@ -86,6 +86,7 @@ async def test_beacon_unsubscribe_requires_signed_confirmed_post(session, monkey
         await session.refresh(cl)
         assert cl.enrollment_status == "active"
         assert cl.sending_paused is True
+        assert cl.unsubscribe_review_hold is True
     assert (await session.execute(select(UnsubscribeAudit))).scalar_one_or_none() is None
     pending = (await session.execute(select(UnconfirmedUnsubscribeRequest))).scalar_one()
     assert pending.request_count == 3
@@ -97,6 +98,7 @@ async def test_beacon_unsubscribe_requires_signed_confirmed_post(session, monkey
     await session.refresh(cl)
     await session.refresh(pending)
     assert cl.enrollment_status == "unsubscribed"
+    assert cl.unsubscribe_review_hold is False
     assert pending.review_decision == "confirmed"
     assert pending.reviewed_at is not None
     audit = (await session.execute(select(UnsubscribeAudit))).scalar_one()

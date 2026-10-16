@@ -35,6 +35,7 @@ from app.models import (
     CustomEmailOverride,
     PersonalizedEmailDraft,
     ManualStepRecord,
+    UnconfirmedUnsubscribeRequest,
 )
 from app.campaign_lead_status import (
     ENROLLMENT_STATUSES,
@@ -1226,11 +1227,26 @@ async def patch_campaign_lead(
         select(CampaignLead).where(
             CampaignLead.campaign_id == campaign_id,
             CampaignLead.lead_id == lead_id,
-        )
+        ).with_for_update()
     )
     cl = result.scalar_one_or_none()
     if not cl:
         raise HTTPException(404, "Campaign-lead enrolment not found")
+
+    if payload.sending_paused is False:
+        if cl.enrollment_status == "unsubscribed":
+            raise HTTPException(409, "Unsubscribed enrollment cannot be resumed")
+        reviews = await db.execute(select(UnconfirmedUnsubscribeRequest).where(
+            UnconfirmedUnsubscribeRequest.campaign_id == campaign_id,
+            UnconfirmedUnsubscribeRequest.lead_id == lead_id,
+        ).order_by(UnconfirmedUnsubscribeRequest.id.desc()).with_for_update())
+        requests = reviews.scalars().all()
+        if any(request.reviewed_at is None for request in requests):
+            raise HTTPException(409, "Unsubscribe request is awaiting review")
+        if cl.unsubscribe_review_hold:
+            if not requests or requests[0].review_decision != "rejected":
+                raise HTTPException(409, "Unsubscribe review hold cannot be released")
+            cl.unsubscribe_review_hold = False
 
     if payload.status is not None:
         st = (payload.status or "").strip().lower()
@@ -1268,6 +1284,7 @@ async def patch_campaign_lead(
         "status": cl.enrollment_status,
         "interest": cl.interest_status,
         "sending_paused": cl.sending_paused,
+        "unsubscribe_review_hold": cl.unsubscribe_review_hold,
     }
 
 
@@ -2420,6 +2437,27 @@ _verification_lock = asyncio.Lock()
 _verification_last_check_at: float | None = None
 
 
+async def require_verification_ready(db: AsyncSession) -> None:
+    """Reject manual verification before changing a cached sendable verdict."""
+    from app.app_settings import (
+        get_setting, EMAIL_VERIFICATION_ENABLED, EMAIL_VERIFICATION_PROVIDER,
+        EMAIL_VERIFICATION_API_KEY, EMAIL_VERIFICATION_CUSTOM_URL,
+        EMAIL_VERIFICATION_CUSTOM_FIELD,
+    )
+
+    enabled = (await get_setting(db, EMAIL_VERIFICATION_ENABLED) or "false").lower() in ("true", "1", "yes")
+    if not enabled:
+        raise HTTPException(503, "Email verification is not enabled")
+    provider_name = await get_setting(db, EMAIL_VERIFICATION_PROVIDER) or "mailtester_ninja"
+    if provider_name == "custom":
+        custom_url = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_URL) or ""
+        custom_field = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_FIELD) or ""
+        if "{email}" not in custom_url or not custom_field.strip():
+            raise HTTPException(503, "Custom verification provider is not configured")
+    elif not (await get_setting(db, EMAIL_VERIFICATION_API_KEY) or "").strip():
+        raise HTTPException(503, "Email verification API key is not configured")
+
+
 async def _run_background_verification(lead_ids: list[int], *, reverify: bool = False):
     """Serialize checker traffic and skip IDs resolved by an earlier worker."""
     async with _verification_lock:
@@ -2464,12 +2502,7 @@ async def _run_background_verification_locked(lead_ids: list[int], *, reverify: 
         await db.commit()
 
     def _provider_failed(result) -> bool:
-        if result.status != "unknown":
-            return False
-        message = (result.message or "").lower()
-        return message.startswith(("http ", "request error", "unexpected error",
-                                   "response was not valid json", "invalid url template",
-                                   "all retries exhausted"))
+        return bool(getattr(result, "failed", False))
 
     async def _flush_valid(valid_ids: list[int], flush_db) -> None:
         """Schedule a batch of newly-verified valid leads (grouped by campaign)."""
@@ -2505,7 +2538,7 @@ async def _run_background_verification_locked(lead_ids: list[int], *, reverify: 
                 valid_vals = json.loads(await get_setting(db, EMAIL_VERIFICATION_CUSTOM_VALID_VALUES) or "[]")
                 invalid_vals = json.loads(await get_setting(db, EMAIL_VERIFICATION_CUSTOM_INVALID_VALUES) or "[]")
                 custom_method = await get_setting(db, EMAIL_VERIFICATION_CUSTOM_METHOD) or "GET"
-                if not custom_url or "{email}" not in custom_url:
+                if "{email}" not in custom_url or not custom_field.strip():
                     log.warning("Custom email verification provider has no valid URL template configured")
                     await _fail_pending(db, "Custom verification provider is not configured")
                     return
@@ -2699,6 +2732,8 @@ async def trigger_verification_for_campaign(
             "needs_reverify": total_verified > 0,
             "total_verified": total_verified,
         }
+
+    await require_verification_ready(db)
 
     if not reverify:
         selected = await db.execute(select(Lead).where(Lead.id.in_(lead_ids)))

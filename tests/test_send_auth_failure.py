@@ -59,6 +59,30 @@ async def test_paused_enrollment_preserves_queued_slot(session, monkeypatch, job
     assert await session.scalar(select(func.count(EmailLog.id))) == 0
 
 
+@pytest.mark.asyncio
+async def test_invalid_public_unsubscribe_url_blocks_send_and_alerts_once(session, monkeypatch):
+    from app.settings_manager import settings
+    inbox = await _make_smtp_inbox(session)
+    inbox.beacon_connected = True
+    inbox.beacon_base_url = "https://beacon.example"
+    slot = await _make_due_slot(session, inbox)
+    events = []
+    async def capture(db, event, data):
+        events.append((event, data))
+    monkeypatch.setattr(settings, "base_url", "http://app.example")
+    monkeypatch.setattr("app.jobs.fire_webhook_event", capture)
+    monkeypatch.setattr("app.jobs.send_email", lambda **kwargs:
+                        (_ for _ in ()).throw(AssertionError("Invalid URL must block send")))
+    monkeypatch.setattr(jobs_mod, "AsyncSessionLocal", lambda: _SessionCtx(session))
+    jobs_mod._unsubscribe_url_alerted.clear()
+    await jobs_mod.send_slot_job(slot.id)
+    await jobs_mod.send_slot_job(slot.id)
+    assert len([event for event, _ in events if event == "feature.error"]) == 1
+    assert events[0][1]["inbox_id"] == inbox.id
+    assert "http://app.example" not in str(events)
+    assert await session.scalar(select(QueueSlot.id).where(QueueSlot.id == slot.id)) == slot.id
+
+
 async def _make_smtp_inbox(session, email: str = "relay@example.com"):
     inbox = await make_inbox(session, email=email, provider="smtp")
     session.add(

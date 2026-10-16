@@ -287,8 +287,16 @@ def _build_leads_stmt(
 
 
 async def _reset_all_enrollments_for_lead(db: AsyncSession, lead_id: int) -> None:
+    open_requests = await db.scalars(select(UnconfirmedUnsubscribeRequest.campaign_id).where(
+        UnconfirmedUnsubscribeRequest.lead_id == lead_id,
+        UnconfirmedUnsubscribeRequest.reviewed_at.is_(None),
+    ))
+    open_campaign_ids = set(open_requests.all())
     res = await db.execute(select(CampaignLead).where(CampaignLead.lead_id == lead_id))
     for cl in res.scalars().all():
+        if (cl.enrollment_status == "unsubscribed" or cl.unsubscribe_review_hold
+                or cl.campaign_id in open_campaign_ids):
+            continue
         cl.enrollment_status = "active"
         cl.interest_status = None
         cl.sending_paused = False
@@ -609,7 +617,8 @@ async def _mutate_lead_recover(lead: Lead, norm: str, verify: bool) -> None:
     from app.email_verification import PENDING
 
     lead.email = norm
-    lead.status = "active"
+    if lead.status != "unsubscribed":
+        lead.status = "active"
     lead.provider = None
     if verify:
         lead.email_verification_status = PENDING
@@ -870,14 +879,10 @@ async def bulk_recover_leads(
     if not body.items:
         return {"recovered": 0, "errors": [], "recovered_ids": []}
 
-    from app.app_settings import EMAIL_VERIFICATION_ENABLED, get_setting
-
-    enabled = (await get_setting(db, EMAIL_VERIFICATION_ENABLED) or "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    verify = body.verify_email and enabled
+    verify = body.verify_email
+    if verify:
+        from app.routers.campaigns import require_verification_ready
+        await require_verification_ready(db)
 
     errors: list[dict] = []
     recovered_ids: list[int] = []
@@ -1015,12 +1020,13 @@ async def get_lead_research(lead_id: int, db: AsyncSession = Depends(get_db)):
 async def retry_lead_verification(lead_id: int, background_tasks: BackgroundTasks,
                                   db: AsyncSession = Depends(get_db)):
     """Retry an unverified, pending, or failed address without rechecking valid leads."""
-    from app.routers.campaigns import _run_background_verification
+    from app.routers.campaigns import _run_background_verification, require_verification_ready
     lead = await db.scalar(select(Lead).where(Lead.id == lead_id).with_for_update())
     if lead is None:
         raise HTTPException(404, "Lead not found")
     if lead.email_verification_status not in (None, "pending", "verification_error"):
         raise HTTPException(409, "Lead has a cached verification result; use explicit reverify")
+    await require_verification_ready(db)
     lead.email_verification_status = "pending"
     lead.email_verification_result = None
     await db.commit()
@@ -1345,14 +1351,10 @@ async def recover_lead(
     if dup.scalar_one_or_none():
         raise HTTPException(409, "Another lead already uses this email address")
 
-    from app.app_settings import EMAIL_VERIFICATION_ENABLED, get_setting
-
-    enabled = (await get_setting(db, EMAIL_VERIFICATION_ENABLED) or "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    verify = body.verify_email and enabled
+    verify = body.verify_email
+    if verify:
+        from app.routers.campaigns import require_verification_ready
+        await require_verification_ready(db)
 
     await _mutate_lead_recover(lead, norm, verify)
     await _after_lead_recovered(db, lead_id)

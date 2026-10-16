@@ -5,7 +5,11 @@
 """
 
 import io
+import hashlib
+import hmac
+import json
 import pytest
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from fastapi import BackgroundTasks, HTTPException
 
@@ -19,6 +23,7 @@ from app.models import (
     CampaignInbox,
     QueueSlot,
     Sequence,
+    LeadUnsubscribeToken,
 )
 from app.schemas import InboxUpdate, PauseInboxRequest, InboxCreate
 from app.routers import inbox as inbox_router
@@ -309,6 +314,40 @@ async def test_unpause_inbox_clears_flag(session):
     assert result.paused is False
     await session.refresh(inbox)
     assert inbox.paused is False
+
+
+@pytest.mark.asyncio
+async def test_inbox_pause_resume_preserves_legacy_unsubscribe_hold(session, monkeypatch):
+    from app.routers.beacon_ingest import beacon_ingest
+    inbox = await make_inbox(session, email="held@test.com")
+    inbox.beacon_webhook_secret = "test-secret"
+    campaign = await make_campaign(session)
+    lead = await make_lead(session)
+    cl = await make_campaign_lead(session, campaign.id, lead.id)
+    await make_campaign_inbox(session, campaign.id, inbox.id)
+    session.add(LeadUnsubscribeToken(
+        lead_id=lead.id, campaign_id=campaign.id, token="old-beacon-link"))
+    await session.flush()
+    async def no_webhook(*args, **kwargs):
+        pass
+    monkeypatch.setattr("app.routers.beacon_ingest.fire_webhook_event", no_webhook)
+    body = json.dumps({"inbox_id": inbox.id, "kind": "unsubscribe",
+                       "path_token": "old-beacon-link"}).encode()
+    digest = hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
+    async def read_body():
+        return body
+    request = SimpleNamespace(body=read_body, headers={"X-Beacon-Signature": f"sha256={digest}"})
+    assert (await beacon_ingest(request, db=session))["pending_review"] is True
+    await session.refresh(cl)
+    assert cl.unsubscribe_review_hold is True
+    assert cl.sending_paused is True
+
+    await inbox_router.pause_inbox(inbox.id, PauseInboxRequest(action="pause_leads"),
+                                   BackgroundTasks(), db=session)
+    await inbox_router.unpause_inbox(inbox.id, BackgroundTasks(), db=session)
+    await session.refresh(cl)
+    assert cl.unsubscribe_review_hold is True
+    assert cl.sending_paused is True
 
 
 @pytest.mark.asyncio

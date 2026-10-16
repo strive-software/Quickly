@@ -15,6 +15,8 @@ function formatDt(iso) {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
+const reviewLabels = { accepted: 'Accepted', rejected: 'Rejected', confirmed: 'Confirmed by recipient' };
+
 export default function LeadDetail() {
   const { id } = useParams();
   const notify = useNotify();
@@ -45,7 +47,7 @@ export default function LeadDetail() {
   async function reviewUnconfirmed(row, decision) {
     const prompt = decision === 'accepted'
       ? 'Accept this request and unsubscribe the lead?'
-      : 'Reject this unconfirmed request? Sending stays paused until explicitly resumed.';
+      : 'Reject this unconfirmed request? An older Beacon page may already have shown the recipient a success message. Sending remains paused; resume separately after review.';
     if (!await confirm(prompt)) return;
     setReviewBusy(row.request_id);
     try {
@@ -214,8 +216,8 @@ export default function LeadDetail() {
                 )}
                 {row.kind === 'unconfirmed_unsubscribe' && <div className="mt-2 space-y-1 text-xs text-gray-700">
                   <p>{row.request_count || 1} request{row.request_count === 1 ? '' : 's'} · Last seen {formatDt(row.last_seen_at)}</p>
-                  <p>{row.paused_by_request ? 'Sending paused for review' : 'Review required'}{row.ip_address ? ` · IP ${row.ip_address}` : ''}{row.user_agent ? ` · ${row.user_agent}` : ''}</p>
-                  {row.review_decision ? <p className="font-medium">{row.review_decision === 'accepted' ? 'Accepted' : 'Rejected'} {row.reviewed_at ? `· ${formatDt(row.reviewed_at)}` : ''}</p> : <div className="flex gap-3 pt-1">
+                  <p>{row.review_decision === 'rejected' && row.paused_by_request ? 'Sending remains paused' : row.review_decision ? 'Review resolved' : row.paused_by_request ? 'Sending paused for review' : 'Review required'}{row.ip_address ? ` · IP ${row.ip_address}` : ''}{row.user_agent ? ` · ${row.user_agent}` : ''}</p>
+                  {row.review_decision ? <p className="font-medium">{reviewLabels[row.review_decision] || row.review_decision} {row.reviewed_at ? `· ${formatDt(row.reviewed_at)}` : ''}</p> : <div className="flex gap-3 pt-1">
                     <button type="button" disabled={reviewBusy === row.request_id} onClick={() => reviewUnconfirmed(row, 'accepted')} className="text-red-700 underline disabled:opacity-50">Accept unsubscribe</button>
                     <button type="button" disabled={reviewBusy === row.request_id} onClick={() => reviewUnconfirmed(row, 'rejected')} className="text-teal-700 underline disabled:opacity-50">Reject request</button>
                   </div>}

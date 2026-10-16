@@ -28,11 +28,12 @@ BLOCK_SEND_STATUSES = {INVALID, RISKY}
 class VerificationResult:
     """Normalised output returned by every provider."""
 
-    def __init__(self, email: str, status: str, raw: dict | None = None, message: str = ""):
+    def __init__(self, email: str, status: str, raw: dict | None = None, message: str = "", failed: bool = False):
         self.email = email
         self.status = status        # one of the constants above
         self.raw = raw or {}        # raw provider response for debugging
         self.message = message      # human-readable explanation
+        self.failed = failed        # provider/config/transport failure, not an email verdict
 
 
 # ── Base class ───────────────────────────────────────────────────────────────
@@ -61,16 +62,18 @@ class MailtesterNinjaProvider(BaseVerificationProvider):
                         await asyncio.sleep(3 * (attempt + 1))
                         continue
                     if resp.status_code != 200:
-                        return VerificationResult(email, UNKNOWN, message=f"HTTP {resp.status_code}")
+                        return VerificationResult(email, UNKNOWN, message=f"HTTP {resp.status_code}", failed=True)
                     data = resp.json()
                     return self._normalise(email, data)
                 except (httpx.RequestError, Exception) as exc:
-                    log.warning("MailtesterNinja attempt %d failed for %s: %s", attempt + 1, email, exc)
+                    log.warning("MailtesterNinja attempt %d failed for %s: %s", attempt + 1, email, type(exc).__name__)
                     await asyncio.sleep(2)
-        return VerificationResult(email, UNKNOWN, message="All retries exhausted")
+        return VerificationResult(email, UNKNOWN, message="All retries exhausted", failed=True)
 
     @staticmethod
     def _normalise(email: str, data: dict) -> VerificationResult:
+        if not isinstance(data, dict) or not any(data.get(key) for key in ("code", "message")):
+            return VerificationResult(email, UNKNOWN, message="Missing verification result", failed=True)
         code = data.get("code", "")
         message = data.get("message", "")
 
@@ -130,7 +133,7 @@ class CustomHttpProvider(BaseVerificationProvider):
     async def verify(self, email: str, api_key: str) -> VerificationResult:  # noqa: ARG002
         if not self.url_template or "{email}" not in self.url_template:
             return VerificationResult(
-                email, UNKNOWN, message="Invalid URL template — must contain {email}"
+                email, UNKNOWN, message="Invalid URL template — must contain {email}", failed=True
             )
         url = self.url_template.replace("{email}", email)
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -141,24 +144,27 @@ class CustomHttpProvider(BaseVerificationProvider):
                     resp = await client.get(url, timeout=15)
                 if resp.status_code != 200:
                     return VerificationResult(
-                        email, UNKNOWN, message=f"HTTP {resp.status_code}"
+                        email, UNKNOWN, message=f"HTTP {resp.status_code}", failed=True
                     )
                 try:
                     data = resp.json()
                 except Exception:
                     return VerificationResult(
-                        email, UNKNOWN, message="Response was not valid JSON"
+                        email, UNKNOWN, message="Response was not valid JSON", failed=True
                     )
                 return self._normalise(email, data)
             except httpx.RequestError as exc:
-                return VerificationResult(email, UNKNOWN, message=f"Request error: {exc}")
+                return VerificationResult(email, UNKNOWN, message="Request error", failed=True)
             except Exception as exc:
-                log.warning("CustomHttpProvider error for %s: %s", email, exc)
-                return VerificationResult(email, UNKNOWN, message=f"Unexpected error: {exc}")
+                log.warning("CustomHttpProvider error for %s: %s", email, type(exc).__name__)
+                return VerificationResult(email, UNKNOWN, message="Unexpected provider error", failed=True)
 
     def _normalise(self, email: str, data: Any) -> VerificationResult:
         raw_value = _get_nested(data, self.field_path) if self.field_path else None
         str_val = str(raw_value).strip().lower() if raw_value is not None else ""
+        if raw_value is None or not str_val or isinstance(raw_value, (dict, list)):
+            return VerificationResult(email, UNKNOWN, raw=data,
+                message="Missing or malformed configured verification result", failed=True)
         if str_val in self.valid_values:
             status = VALID
         elif str_val in self.invalid_values:

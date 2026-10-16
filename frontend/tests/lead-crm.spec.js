@@ -148,6 +148,7 @@ test('unconfirmed unsubscribe requests need explicit review and rejection keeps 
   const requests = [
     { kind: 'unconfirmed_unsubscribe', request_id: 31, at: '2026-10-15T12:00:00Z', last_seen_at: '2026-10-16T12:00:00Z', request_count: 2, campaign_name: 'Outreach', paused_by_request: true, review_decision: null },
     { kind: 'unconfirmed_unsubscribe', request_id: 32, at: '2026-10-15T13:00:00Z', last_seen_at: '2026-10-15T13:00:00Z', request_count: 1, campaign_name: 'Other', paused_by_request: true, review_decision: null },
+    { kind: 'unconfirmed_unsubscribe', request_id: 33, at: '2026-10-15T14:00:00Z', last_seen_at: '2026-10-15T14:00:00Z', request_count: 1, campaign_name: 'Recipient campaign', paused_by_request: true, review_decision: 'confirmed' },
   ];
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -170,9 +171,13 @@ test('unconfirmed unsubscribe requests need explicit review and rejection keeps 
   await page.goto('/leads/7');
   await page.getByRole('button', { name: 'Skip onboarding' }).click();
   await expect(page.getByText('Sending paused for review')).toHaveCount(2);
+  const confirmed = page.getByRole('listitem').filter({ hasText: 'Recipient campaign' });
+  await expect(confirmed.getByText('Confirmed by recipient')).toBeVisible();
+  await expect(confirmed.getByRole('button', { name: 'Reject request' })).toHaveCount(0);
+  await expect(confirmed.getByRole('button', { name: 'Accept unsubscribe' })).toHaveCount(0);
   const first = page.getByRole('listitem').filter({ hasText: '2 requests' });
   await first.getByRole('button', { name: 'Reject request' }).click();
-  await expect(page.getByText('Sending stays paused until explicitly resumed.')).toBeVisible();
+  await expect(page.getByText('An older Beacon page may already have shown the recipient a success message.')).toBeVisible();
   await page.getByRole('button', { name: 'OK' }).click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0]).toEqual({ requestId: 31, body: { decision: 'rejected' } });

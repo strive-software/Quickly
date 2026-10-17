@@ -1,3 +1,4 @@
+import Dropdown from './ui/Dropdown';
 import { useState } from 'react';
 import { api } from '../api';
 import { Button } from './ui/Button';
@@ -28,9 +29,9 @@ export default function LeadOutreachFields({ lead, onSaved }) {
   return <Card className="p-4 space-y-5">
     <h2 className="text-lg font-semibold">Lead profile & LinkedIn</h2>
     <form onSubmit={save} className="space-y-4">
-      <label className="block">Priority<select className={inputClass} value={form.priority} onChange={e => change('priority', e.target.value)}>
+      <label className="block">Priority<Dropdown className={inputClass} value={form.priority} onChange={e => change('priority', e.target.value)}>
         {['low', 'normal', 'high'].map(value => <option key={value} value={value}>{value}</option>)}
-      </select></label>
+      </Dropdown></label>
       {['job_title', 'company', 'apollo_id'].map(key => <label className="block" key={key}>{key === 'job_title' ? 'Job title' : key === 'company' ? 'Company' : 'Apollo ID'}
         <input className={inputClass} maxLength={255} value={form[key]} onChange={e => change(key, e.target.value)} />
       </label>)}

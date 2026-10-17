@@ -1,3 +1,4 @@
+import Dropdown from '../components/ui/Dropdown';
 import LeadName from '../components/LeadName';
 import LeadDetailsPanel from '../components/LeadDetailsPanel';
 import RetryLeadVerification from '../components/RetryLeadVerification';
@@ -12,6 +13,7 @@ import { Button } from '../components/ui/Button';
 import { FileUploadArea } from '../components/ui/FileUploadArea';
 import { Card } from '../components/ui/Card';
 import DatePicker from '../components/ui/DatePicker';
+import FilterSelect from '../components/ui/FilterSelect';
 import { useConfirm } from '../context/ConfirmContext';
 import { useAppMode } from '../context/AppModeContext';
 import {
@@ -42,6 +44,15 @@ const TAB_LABELS = {
   queue: 'Queue',
   settings: 'Settings',
 };
+
+const CAMPAIGN_LEAD_FILTERS = [
+  { key: 'status', label: 'Enrollment', options: [['all', 'Any status'], ['active', 'Active'], ['contacted', 'Contacted'], ['completed', 'Completed'], ['bounced', 'Bounced'], ['unsubscribed', 'Unsubscribed'], ['wrong_person', 'Wrong person'], ['needs_custom_email', 'Needs custom email']] },
+  { key: 'interest', label: 'Interest', options: [['all', 'Any interest'], ['unset', 'Not set'], ['interested', 'Interested'], ['not_interested', 'Not interested'], ['out_of_office', 'Out of office'], ['auto_reply', 'Auto-reply']] },
+  { key: 'opened', label: 'Opened', options: [['all', 'Any'], ['yes', 'Yes'], ['no', 'No']] },
+  { key: 'replied', label: 'Replied', options: [['all', 'Any'], ['yes', 'Yes'], ['no', 'No']] },
+  { key: 'clicked', label: 'Clicked', options: [['all', 'Any'], ['yes', 'Yes'], ['no', 'No']] },
+  { key: 'verification', label: 'Email verification', options: [['all', 'Any result'], ['valid', 'Valid'], ['invalid', 'Invalid'], ['risky', 'Risky'], ['catch_all', 'Catch-all'], ['unknown', 'Unknown'], ['pending', 'Pending'], ['unverified', 'Unverified']] },
+];
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function CampaignDetail() {
@@ -454,8 +465,9 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
     clicked: 'all',
     verification: 'all',
   });
+  const [leadSearch, setLeadSearch] = useState('');
   const setFilter = (key, val) => setFilters(prev => ({ ...prev, [key]: val }));
-  const hasActiveFilter = Object.values(filters).some(v => v !== 'all');
+  const hasActiveFilter = Object.values(filters).some(v => v !== 'all') || !!leadSearch.trim();
 
   // All custom field names across all leads
   const customFields = useMemo(() => {
@@ -467,6 +479,10 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
   // Filtered leads based on all active filters
   const filteredLeads = useMemo(() => {
     return leads.filter(l => {
+      if (leadSearch.trim()) {
+        const needle = leadSearch.trim().toLowerCase();
+        if (![l.email, l.name, l.company, l.job_title].some(value => String(value || '').toLowerCase().includes(needle))) return false;
+      }
       if (filters.status !== 'all') {
         if (filters.status === 'active' && l.status !== 'active') return false;
         if (filters.status === 'contacted' && l.status !== 'contacted') return false;
@@ -494,7 +510,7 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
       }
       return true;
     });
-  }, [leads, filters]);
+  }, [leads, filters, leadSearch]);
 
   // Load verification summary
   const loadVerificationSummary = useCallback(async () => {
@@ -804,24 +820,6 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
             {verifying ? 'Verifying…' : 'Verify All Emails'}
           </Button>
         )}
-        <span className="text-xs text-gray-400 ml-1">
-          {filteredLeads.length}{hasActiveFilter ? `/${leads.length}` : ''} lead{filteredLeads.length !== 1 ? 's' : ''}
-        </span>
-        {hasActiveFilter && (
-          <button
-            className="text-xs text-teal-600 hover:underline ml-1"
-            onClick={() =>
-              setFilters({
-                status: 'all',
-                interest: 'all',
-                opened: 'all',
-                replied: 'all',
-                clicked: 'all',
-                verification: 'all',
-              })
-            }
-          >Clear filters</button>
-        )}
       </div>
 
       {/* Duplicate leads notice */}
@@ -930,98 +928,23 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
         )}
       </div>
 
-      {/* Filter bar */}
-      <div className="flex flex-wrap gap-x-6 gap-y-2 p-3 bg-gray-50 dark:bg-gray-800/40 rounded-lg border border-gray-200 dark:border-gray-700 text-xs">
-        {/* Status */}
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-gray-500 whitespace-nowrap">Status:</span>
-          {[{v:'all',l:'All'},{v:'active',l:'Active'},{v:'contacted',l:'Contacted'},{v:'completed',l:'Completed'},{v:'bounced',l:'Bounced'},{v:'unsubscribed',l:'Unsub'},{v:'wrong_person',l:'Wrong person'},{v:'needs_custom_email',l:'Needs custom'}].map(o => (
-            <button key={o.v} onClick={() => setFilter('status', o.v)}
-              className={`px-2 py-0.5 rounded-full font-medium transition-colors ${
-                filters.status === o.v ? 'bg-teal-500 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600 hover:border-teal-300'
-              }`}>{o.l}</button>
-          ))}
+      {/* Compact filters for this campaign's leads. Each choice combines with the others. */}
+      <section aria-label="Campaign lead filters" className="rounded-xl border border-gray-200 bg-gray-50/70 p-4 dark:border-gray-700 dark:bg-gray-800/40">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-300">
+            <span className="mb-1 block">Search leads</span>
+            <input type="search" value={leadSearch} onChange={event => setLeadSearch(event.target.value)} placeholder="Email, name, company or job title…" className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-200 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100" />
+          </label>
+          {CAMPAIGN_LEAD_FILTERS.map(filter => filter.key === 'verification' && !verificationSummary?.statuses ? null :
+            <FilterSelect key={filter.key} label={filter.label} value={filters[filter.key]} onChange={value => setFilter(filter.key, value)}
+              options={filter.options.filter(([value]) => filter.key !== 'verification' || value === 'all' || value === filters.verification || (verificationSummary.statuses[value] || 0) > 0)
+                .map(([value, label]) => ({ value, label: filter.key === 'verification' && value !== 'all' ? `${label} (${verificationSummary.statuses[value] || 0})` : label }))} />)}
         </div>
-        {/* Interest (per-campaign enrollment) */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="font-medium text-gray-500 whitespace-nowrap">Interest:</span>
-          {[
-            { v: 'all', l: 'All' },
-            { v: 'unset', l: 'None' },
-            { v: 'interested', l: 'Interested' },
-            { v: 'not_interested', l: 'Not interested' },
-            { v: 'out_of_office', l: 'OOO' },
-            { v: 'auto_reply', l: 'Auto-reply' },
-          ].map(o => (
-            <button
-              key={o.v}
-              type="button"
-              onClick={() => setFilter('interest', o.v)}
-              className={`px-2 py-0.5 rounded-full font-medium transition-colors ${
-                filters.interest === o.v
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600 hover:border-emerald-400'
-              }`}
-            >
-              {o.l}
-            </button>
-          ))}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="text-gray-500">Showing {filteredLeads.length} of {leads.length} leads{hasActiveFilter ? ' · filters combine' : ''}</span>
+          {hasActiveFilter && <button type="button" onClick={() => { setFilters({ status: 'all', interest: 'all', opened: 'all', replied: 'all', clicked: 'all', verification: 'all' }); setLeadSearch(''); }} className="font-medium text-teal-700 underline dark:text-teal-300">Clear filters</button>}
         </div>
-        {/* Opened */}
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-gray-500 whitespace-nowrap">Opened:</span>
-          {[{v:'all',l:'All'},{v:'yes',l:'Yes'},{v:'no',l:'No'}].map(o => (
-            <button key={o.v} onClick={() => setFilter('opened', o.v)}
-              className={`px-2 py-0.5 rounded-full font-medium transition-colors ${
-                filters.opened === o.v ? 'bg-amber-500 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600 hover:border-amber-300'
-              }`}>{o.l}</button>
-          ))}
-        </div>
-        {/* Replied */}
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-gray-500 whitespace-nowrap">Replied:</span>
-          {[{v:'all',l:'All'},{v:'yes',l:'Yes'},{v:'no',l:'No'}].map(o => (
-            <button key={o.v} onClick={() => setFilter('replied', o.v)}
-              className={`px-2 py-0.5 rounded-full font-medium transition-colors ${
-                filters.replied === o.v ? 'bg-violet-500 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600 hover:border-violet-300'
-              }`}>{o.l}</button>
-          ))}
-        </div>
-        {/* Clicked */}
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-gray-500 whitespace-nowrap">Clicked:</span>
-          {[{v:'all',l:'All'},{v:'yes',l:'Yes'},{v:'no',l:'No'}].map(o => (
-            <button key={o.v} onClick={() => setFilter('clicked', o.v)}
-              className={`px-2 py-0.5 rounded-full font-medium transition-colors ${
-                filters.clicked === o.v ? 'bg-orange-500 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600 hover:border-orange-300'
-              }`}>{o.l}</button>
-          ))}
-        </div>
-        {/* Email verification */}
-        {verificationSummary?.statuses && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="font-medium text-gray-500 whitespace-nowrap">Verified:</span>
-            {[
-              { v: 'all', l: 'All' },
-              { v: 'valid', l: 'Valid' },
-              { v: 'invalid', l: 'Invalid' },
-              { v: 'risky', l: 'Risky' },
-              { v: 'catch_all', l: 'Catch-All' },
-              { v: 'unknown', l: 'Unknown' },
-              { v: 'pending', l: 'Pending' },
-              { v: 'unverified', l: 'Unverified' },
-            ].filter(o => o.v === 'all' || (verificationSummary.statuses[o.v] || 0) > 0).map(o => (
-              <button key={o.v} onClick={() => setFilter('verification', o.v)}
-                className={`px-2 py-0.5 rounded-full font-medium transition-colors ${
-                  filters.verification === o.v ? 'bg-teal-500 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600 hover:border-teal-300'
-                }`}>
-                {o.l}{o.v !== 'all' ? ` (${verificationSummary.statuses[o.v] || 0})` : ''}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
+      </section>
 
       {/* Leads table */}
       {filteredLeads.length === 0 ? (
@@ -1128,7 +1051,8 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
                       >
                         {l.sending_paused ? 'Paused' : 'Active'}
                       </button>
-                      <select
+                      <Dropdown
+                        compact
                         className={`text-[10px] font-medium rounded px-1.5 py-0.5 border cursor-pointer focus:outline-none focus:ring-1 focus:ring-teal-300 ${BADGE_STYLES[l.interest || l.interest_status] || 'bg-gray-50 text-gray-500 border-gray-200'}`}
                         value={l.interest || l.interest_status || ''}
                         title="Reply intent (per campaign) — click to change or remove"
@@ -1148,7 +1072,7 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
                         <option value="not_interested">Not Interested</option>
                         <option value="out_of_office">Out of Office</option>
                         <option value="auto_reply">Auto Reply</option>
-                      </select>
+                      </Dropdown>
                     </div>
                   </td>
                   {/* custom data columns — inline editable */}
@@ -1746,22 +1670,10 @@ function SentEmailsPanel({ sentData = [], filter, onFilterChange, onPreview }) {
   return (
     <div className="space-y-3">
       {/* Filter bar */}
-      <div className="flex flex-wrap gap-1.5 items-center">
-        <span className="text-xs font-medium text-gray-500 mr-1">Filter:</span>
-        {SENT_FILTER_OPTIONS.map(opt => (
-          <button
-            key={opt.value}
-            onClick={() => onFilterChange(opt.value)}
-            className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
-              filter === opt.value
-                ? 'bg-teal-500 text-white border-teal-500'
-                : 'bg-white text-gray-600 border-gray-300 hover:border-teal-300 hover:bg-teal-50'
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
-        <span className="text-xs text-gray-400 ml-2">{filtered.length} email{filtered.length !== 1 ? 's' : ''}</span>
+      <div className="flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-gray-50/70 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+        <FilterSelect label="Sent email filter" value={filter} onChange={onFilterChange} options={SENT_FILTER_OPTIONS} className="min-w-44" />
+        {filter !== 'all' && <button type="button" onClick={() => onFilterChange('all')} className="pb-2 text-xs font-medium text-teal-700 underline dark:text-teal-300">Clear filter</button>}
+        <span className="pb-2 text-xs text-gray-500">{filtered.length} of {sentData.length} emails</span>
       </div>
 
       {filtered.length === 0 ? (
@@ -2335,7 +2247,7 @@ function PreviewModal({ sequence, campaignId, leads, onClose, variant = null, ed
         {/* Lead picker */}
         <div className="px-6 py-3 border-b bg-gray-50 flex flex-wrap items-center gap-3">
           <label className="text-sm font-medium text-gray-600">Preview as:</label>
-          <select
+          <Dropdown
             className="border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-300"
             value={leadId}
             onChange={e => setLeadId(e.target.value)}
@@ -2346,7 +2258,7 @@ function PreviewModal({ sequence, campaignId, leads, onClose, variant = null, ed
                 {l.email}{l.name ? ` — ${l.name}` : ''}
               </option>
             ))}
-          </select>
+          </Dropdown>
           {selectedLead?.name && selectedLead?.linkedin_url && (
             <LeadName name={selectedLead.name} linkedinUrl={selectedLead.linkedin_url} />
           )}
@@ -3127,7 +3039,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
               )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Sequence type</label>
-                <select
+                <Dropdown
                   className="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-300"
                   aria-label="Sequence type"
                   value={editing.sequence_type || 'standard'}
@@ -3154,7 +3066,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                     <option value="standard">Standard — same content for all leads</option>
                     <option value="personalized">Personalized — custom content per lead</option>
                   </>}
-                </select>
+                </Dropdown>
                 {(editing.sequence_type || 'standard') === 'personalized' && (
                   <p className="text-xs text-purple-600 mt-1">
                     Leads will need a custom email written for this step before sending starts.
@@ -3345,7 +3257,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
               )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Sequence type</label>
-                <select
+                <Dropdown
                   className="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-300"
                   aria-label="Sequence type"
                   value={form.sequence_type || 'standard'}
@@ -3369,7 +3281,7 @@ function SequencesTab({ sequences, campaignId, campaign, leads, refresh }) {
                   <option value="standard">Standard — same content for all leads</option>
                   <option value="personalized">Personalized — custom content per lead</option>
                   <option value="linkedin">Manual LinkedIn</option>
-                </select>
+                </Dropdown>
                 {(form.sequence_type || 'standard') === 'personalized' && (
                   <p className="text-xs text-purple-600 mt-1">Leads will need a custom email written for this step before sending starts.</p>
                 )}

@@ -1,3 +1,4 @@
+import Dropdown from '../components/ui/Dropdown';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { api, apiCache, postJsonForDownload } from '../api';
 import { useDarkMode } from '../context/DarkModeContext';
@@ -647,7 +648,7 @@ export default function Settings() {
       <div className="space-y-2">
         <div className="flex items-center gap-3">
           <span className="text-xs font-medium text-gray-600">Events:</span>
-          <select
+          <Dropdown
             className="border rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-teal-300"
             value={mode}
             onChange={e => {
@@ -657,7 +658,7 @@ export default function Settings() {
           >
             <option value="all">All Events</option>
             <option value="specific">Specific Events</option>
-          </select>
+          </Dropdown>
         </div>
         {mode === 'specific' && (
           <div className="border rounded-lg p-3 bg-gray-50 space-y-3">
@@ -1940,7 +1941,7 @@ export default function Settings() {
                     <div className="mt-3 p-3 bg-gray-50 dark:bg-gray-800 border rounded-lg space-y-2">
                       <p className="text-xs font-semibold text-gray-600">Simulate a specific event to see the exact payload:</p>
                       <div className="flex items-center gap-2">
-                        <select
+                        <Dropdown
                           className="border rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-teal-300 flex-1"
                           value={testEventType}
                           onChange={e => { setTestEventType(e.target.value); setTestEventResult(null); }}
@@ -1949,7 +1950,7 @@ export default function Settings() {
                           {eventTypes.map(evt => (
                             <option key={evt} value={evt}>{EVENT_LABELS[evt] || evt}</option>
                           ))}
-                        </select>
+                        </Dropdown>
                         <Button size="sm" onClick={() => testWebhookEvent(wh.id, testEventType)}>
                           Send
                         </Button>

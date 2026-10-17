@@ -2,12 +2,14 @@ import { test, expect } from '@playwright/test';
 
 test('lead details keep research sources and save a personalized draft without releasing it', async ({ page }) => {
   const writes = [];
+  const leadQueries = [];
   const lead = { id: 7, email: 'alex@example.com', name: 'Alex', job_title: 'VP Operations', company: 'Acme', priority: 'normal', email_verification_status: 'valid', campaigns: [], interactions: [] };
   let research = { lead_id: 7, summary: 'Operations leader', sources: [{ title: 'Profile', url: 'https://www.linkedin.com/in/alex', notes: 'Current role' }], updated_at: '2026-10-15T12:00:00Z' };
   const email = { kind: 'pending', status: 'needs_writing', campaign_id: 3, campaign_name: 'Outreach', sequence_id: 11, sequence_index: 1, subject: 'Hello Alex', body: 'Draft body', is_html: false, editing_source: { subject: 'Hello {{name}}', body: 'Draft {{name}}', is_html: false }, from_email: 'sender@example.com', to_email: 'alex@example.com', scheduled_at: null, editable: true, draft: null };
   await page.route('**/api/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && path === '/api/leads') leadQueries.push(new URL(request.url()).searchParams);
     let data = {
       '/api/auth/setup-status': { setup_complete: true }, '/api/auth/refresh': { access_token: 'test' },
       '/api/auth/me': { id: 1, email: 'owner@example.com', role: 'admin', name: 'Owner' },
@@ -40,6 +42,18 @@ test('lead details keep research sources and save a personalized draft without r
   await expect(page.getByRole('columnheader', { name: 'Company' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry verification' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Verify email' })).toHaveCount(0);
+  await page.getByLabel('Search leads').fill('Acme');
+  await page.getByLabel('Enrollment / reply').selectOption('active');
+  await page.getByLabel('Interest').selectOption('interested');
+  await page.getByLabel('Priority').selectOption('high');
+  expect(await page.getByRole('combobox', { name: 'Priority' }).evaluate(element => getComputedStyle(element).appearance)).toBe('none');
+  await expect.poll(() => leadQueries.at(-1)?.get('q')).toBe('Acme');
+  await expect.poll(() => leadQueries.at(-1)?.get('priority')).toBe('high');
+  expect(leadQueries.at(-1).get('q')).toBe('Acme');
+  expect(leadQueries.at(-1).get('status')).toBe('active');
+  expect(leadQueries.at(-1).get('interest')).toBe('interested');
+  await page.getByRole('button', { name: 'Clear all' }).click();
+  await expect(page.getByLabel('Priority')).toHaveValue('all');
   await page.getByRole('button', { name: 'alex@example.com' }).click();
   const panel = page.getByRole('dialog', { name: 'Lead details' });
   await expect(panel.getByText('VP Operations · Acme')).toBeVisible();
@@ -57,12 +71,16 @@ test('lead details keep research sources and save a personalized draft without r
   await expect(panel.getByText('Needs writing')).toBeVisible();
   await expect(panel.getByText('Outreach · Step 2')).toBeVisible();
   await panel.getByRole('button', { name: 'Preview' }).click();
+  await expect(panel.getByRole('article').getByRole('heading', { name: 'Email preview' })).toBeVisible();
   await expect(panel.getByText('sender@example.com')).toHaveCount(2);
   await panel.getByRole('button', { name: 'Close email preview' }).click();
   await panel.getByRole('button', { name: 'Edit this lead’s email' }).click();
+  await expect(panel.getByRole('article').getByRole('heading', { name: 'Edit this lead’s email' })).toBeVisible();
   await expect(panel.getByRole('textbox', { name: 'Subject' })).toHaveValue('Hello {{name}}');
   await expect(panel.getByRole('textbox', { name: 'Body' })).toHaveValue('Draft {{name}}');
   await panel.getByRole('textbox', { name: 'Body' }).fill('Only Alex gets this wording');
+  await panel.getByRole('button', { name: 'Refresh emails' }).click();
+  await expect(panel.getByRole('article').getByRole('textbox', { name: 'Body' })).toHaveValue('Only Alex gets this wording');
   await panel.getByRole('button', { name: 'Save draft' }).click();
   await expect.poll(() => writes.length).toBe(2);
   expect(writes[1]).toEqual({ path: '/api/campaigns/3/leads/7/custom-email/11/draft', body: { subject: 'Hello {{name}}', body: 'Only Alex gets this wording', is_html: false, expected_updated_at: null } });
@@ -113,7 +131,12 @@ test('campaign leads table shows row number and profile, and opens the same lead
   await expect(table.getByRole('row').filter({ hasText: 'alex@example.com' })).toContainText('VP Operations');
   await expect(table.getByRole('row').filter({ hasText: 'alex@example.com' })).toContainText('Acme');
   await expect(table.getByRole('row').filter({ hasText: 'alex@example.com' }).getByRole('cell').first()).toHaveText('1');
+  expect(await table.getByRole('combobox').first().evaluate(element => getComputedStyle(element).minHeight)).toBe('24px');
   await expect(table.getByText('Verification error: Checker unavailable')).toBeVisible();
+  await page.getByLabel('Search leads').fill('Not a matching title');
+  await expect(page.getByText('No leads match the current filter.')).toBeVisible();
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(table.getByRole('row').filter({ hasText: 'alex@example.com' })).toBeVisible();
   await table.getByRole('button', { name: 'Retry verification' }).click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0]).toEqual({ path: '/api/leads/7/verify', body: {} });
@@ -133,6 +156,10 @@ test('campaign leads table shows row number and profile, and opens the same lead
   await page.screenshot({ path: 'test-results/lead-crm-emails.png' });
   await panel.getByRole('button', { name: 'Close email preview' }).click();
   await panel.getByRole('article').filter({ hasText: '(reply in thread)' }).getByRole('button', { name: 'Edit this lead’s email' }).click();
+  const replyCard = panel.getByRole('article').filter({ hasText: '(reply in thread)' });
+  await expect(replyCard.getByRole('heading', { name: 'Edit this lead’s email' })).toBeVisible();
+  await expect(replyCard.getByRole('textbox', { name: 'Body' })).toBeVisible();
+  await expect(panel.getByRole('article').filter({ hasText: 'Earlier note' }).getByRole('textbox', { name: 'Body' })).toHaveCount(0);
   await expect(panel.getByRole('textbox', { name: 'Subject' })).toHaveValue('');
   await expect(panel.getByRole('textbox', { name: 'Body' })).toHaveValue('Hi {{name}}');
   await expect(panel.getByRole('checkbox', { name: 'HTML body' })).not.toBeChecked();

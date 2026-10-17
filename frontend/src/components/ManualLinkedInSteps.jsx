@@ -1,3 +1,4 @@
+import Dropdown from './ui/Dropdown';
 import LeadName from './LeadName';
 import { useEffect, useState } from 'react';
 import { api } from '../api';
@@ -13,10 +14,10 @@ const localDate = value => {
 export function ManualLinkedInFields({ value, onChange }) {
   return <div className="space-y-4">
     <p className="text-sm text-gray-600">Send this message yourself in LinkedIn, then mark it sent here. Nothing is sent automatically.</p>
-    <label className="block">Manual step behavior<select className={inputClass} value={value.manual_mode || 'hold'} onChange={e => onChange({ manual_mode: e.target.value })}>
+    <label className="block">Manual step behavior<Dropdown className={inputClass} value={value.manual_mode || 'hold'} onChange={e => onChange({ manual_mode: e.target.value })}>
       <option value="hold">Hold — wait until completed or ignored</option>
       <option value="ignore">Ignore — emails continue without waiting</option>
-    </select></label>
+    </Dropdown></label>
     <label className="block">LinkedIn draft (optional)<textarea className={inputClass} rows={5} maxLength={10000} value={value.body || ''} onChange={e => onChange({ body: e.target.value })} /></label>
     <p className="text-xs text-gray-500">Each lead can have a different message. Hold pauses later steps; Ignore lets emails continue while this message stays Pending or Done.</p>
   </div>;
@@ -47,9 +48,9 @@ function LeadManualStep({ campaignId, initial }) {
     {initial.linkedin_url && /^https:\/\/([a-z0-9-]+\.)*linkedin\.com\//i.test(initial.linkedin_url) && <a className="text-teal-700 underline" href={initial.linkedin_url} target="_blank" rel="noreferrer">Open LinkedIn profile</a>}
     <fieldset disabled={busy} className="space-y-3">
     <label className="block">Message<textarea className={inputClass} rows={4} maxLength={10000} value={form.message} onChange={e => change('message', e.target.value)} /></label>
-    <label className="block">Status<select className={inputClass} value={form.sent ? 'done' : 'pending'} onChange={e => setForm(old => ({ ...old, sent: e.target.value === 'done', sent_at: e.target.value === 'done' ? old.sent_at : '' }))}>
+    <label className="block">Status<Dropdown className={inputClass} value={form.sent ? 'done' : 'pending'} onChange={e => setForm(old => ({ ...old, sent: e.target.value === 'done', sent_at: e.target.value === 'done' ? old.sent_at : '' }))}>
       <option value="pending">Pending</option><option value="done">Done — sent</option>
-    </select></label>
+    </Dropdown></label>
     {form.sent && <label className="block">Sent at (local time; blank preserves the time or uses now)<input type="datetime-local" className={inputClass} value={form.sent_at} onChange={e => change('sent_at', e.target.value)} /></label>}
     <label className="flex items-center gap-2"><input type="checkbox" checked={!!form.ignored} onChange={e => change('ignored', e.target.checked)} />Ignore for this lead</label>
     <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save manual step'}</Button>

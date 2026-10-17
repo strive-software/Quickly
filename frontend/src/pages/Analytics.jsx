@@ -1,3 +1,4 @@
+import Dropdown from '../components/ui/Dropdown';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { api, apiCache } from '../api';
@@ -345,7 +346,7 @@ export default function Analytics() {
         <div className="flex-1">
           <label htmlFor="campaign-select" className="sr-only">Campaigns</label>
           <div className="flex items-center gap-2">
-            <select
+            <Dropdown
               id="campaign-select"
               value={currentChoice}
               onChange={e => setCurrentChoice(e.target.value)}
@@ -357,7 +358,7 @@ export default function Analytics() {
                 .map(c => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
-            </select>
+            </Dropdown>
             <Button
               variant="outline"
               size="sm"

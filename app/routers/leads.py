@@ -282,7 +282,7 @@ def _build_leads_stmt(
 
     if q and q.strip():
         pat = f"%{q.strip()}%"
-        stmt = stmt.where(or_(Lead.email.ilike(pat), Lead.name.ilike(pat)))
+        stmt = stmt.where(or_(Lead.email.ilike(pat), Lead.name.ilike(pat), Lead.company.ilike(pat), Lead.job_title.ilike(pat)))
     return stmt
 
 
@@ -684,7 +684,7 @@ async def list_leads(
         None,
         description="Filter by per-enrollment interest: interested, not_interested, out_of_office, auto_reply, or unset (cleared / null). Stacks with status and bad_only.",
     ),
-    q: str | None = Query(None, description="Search email or name (substring)"),
+    q: str | None = Query(None, description="Search email, name, company or job title (substring)"),
     db: AsyncSession = Depends(get_db),
 ):
     """List lead profiles, notes and last tracked email. Manual steps live in campaigns."""

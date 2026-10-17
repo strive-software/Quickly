@@ -1,3 +1,4 @@
+import Dropdown from '../components/ui/Dropdown';
 import LeadName from '../components/LeadName';
 import LeadDetailsPanel from '../components/LeadDetailsPanel';
 import RetryLeadVerification from '../components/RetryLeadVerification';
@@ -8,6 +9,7 @@ import { Button } from '../components/ui/Button';
 import { FileUploadArea } from '../components/ui/FileUploadArea';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
+import FilterSelect from '../components/ui/FilterSelect';
 import { useNotify } from '../context/NotificationContext';
 import { useConfirm } from '../context/ConfirmContext';
 import { useLoading } from '../context/LoadingContext';
@@ -36,6 +38,12 @@ const INTEREST_FILTER_OPTIONS = [
 
 const TAB_ALL = 'all';
 const TAB_BOUNCED = 'bounced';
+const PRIORITY_OPTIONS = [
+  { value: 'all', label: 'Any priority' },
+  { value: 'high', label: 'High' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'low', label: 'Low' },
+];
 
 function formatEnrolled(campaigns) {
   if (!campaigns?.length) return '—';
@@ -106,6 +114,13 @@ export default function Leads() {
   const [emailDrafts, setEmailDrafts] = useState({});
   const [bulkEnrollmentStatus, setBulkEnrollmentStatus] = useState('active');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const activeFilters = [
+    search.trim() && { key: 'search', label: `Search: ${search.trim()}`, clear: () => setSearch('') },
+    tab === TAB_ALL && statusFilter !== 'all' && { key: 'status', label: `Status: ${STATUS_OPTIONS.find(o => o.value === statusFilter)?.label || statusFilter}`, clear: () => setStatusFilter('all') },
+    interestFilter !== 'all' && { key: 'interest', label: `Interest: ${INTEREST_FILTER_OPTIONS.find(o => o.value === interestFilter)?.label || interestFilter}`, clear: () => setInterestFilter('all') },
+    priorityFilter !== 'all' && { key: 'priority', label: `Priority: ${PRIORITY_OPTIONS.find(o => o.value === priorityFilter)?.label || priorityFilter}`, clear: () => setPriorityFilter('all') },
+  ].filter(Boolean);
+  const clearFilters = () => { setSearch(''); setStatusFilter('all'); setInterestFilter('all'); setPriorityFilter('all'); };
 
   const notify = useNotify();
   const confirm = useConfirm();
@@ -383,50 +398,19 @@ export default function Leads() {
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-4">
-        <label>Lead priority <select className="border rounded p-2" value={priorityFilter} onChange={e => setPriorityFilter(e.target.value)}>
-          {['all', 'low', 'normal', 'high'].map(value => <option key={value}>{value}</option>)}
-        </select></label>
-      </div>
-      {tab === TAB_ALL && (
-        <div className="flex flex-wrap gap-2 items-center">
-          <span className="text-sm text-gray-500">Status:</span>
-          {STATUS_OPTIONS.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              onClick={() => setStatusFilter(o.value)}
-              className={cn(
-                'rounded-full border text-xs font-medium px-3 py-1',
-                statusFilter === o.value
-                  ? 'bg-teal-500 text-white border-teal-500'
-                  : 'bg-white text-gray-600 border-gray-300 hover:border-teal-300 hover:bg-teal-50',
-              )}
-            >
-              {o.label}
-            </button>
-          ))}
+      <section aria-label="Lead filters" className="rounded-xl border border-gray-200 bg-gray-50/70 p-4 dark:border-gray-700 dark:bg-gray-800/40">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(12rem,2fr)_repeat(3,minmax(9rem,1fr))] lg:items-end">
+          <Input label="Search leads" placeholder="Email, name, company or job title…" value={search} onChange={event => setSearch(event.target.value)} />
+          {tab === TAB_ALL && <FilterSelect label="Enrollment / reply" value={statusFilter} onChange={setStatusFilter} options={STATUS_OPTIONS} />}
+          <FilterSelect label="Interest" value={interestFilter} onChange={setInterestFilter} options={INTEREST_FILTER_OPTIONS} />
+          <FilterSelect label="Priority" value={priorityFilter} onChange={setPriorityFilter} options={PRIORITY_OPTIONS} />
         </div>
-      )}
-
-      <div className="flex flex-wrap gap-2 items-center">
-        <span className="text-sm text-gray-500">Interest:</span>
-        {INTEREST_FILTER_OPTIONS.map((o) => (
-          <button
-            key={o.value}
-            type="button"
-            onClick={() => setInterestFilter(o.value)}
-            className={cn(
-              'rounded-full border text-xs font-medium px-3 py-1',
-              interestFilter === o.value
-                ? 'bg-emerald-600 text-white border-emerald-600'
-                : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-400 hover:bg-emerald-50',
-            )}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
+        {activeFilters.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-medium text-gray-500">Active filters</span>
+          {activeFilters.map(filter => <button key={filter.key} type="button" onClick={filter.clear} aria-label={`Remove ${filter.label} filter`} className="rounded-full border border-teal-200 bg-teal-50 px-2.5 py-1 text-teal-800 hover:bg-teal-100 dark:border-teal-800 dark:bg-teal-950 dark:text-teal-200">{filter.label} <span aria-hidden="true">×</span></button>)}
+          <button type="button" onClick={clearFilters} className="font-medium text-teal-700 underline dark:text-teal-300">Clear all</button>
+        </div>}
+      </section>
 
       {tab === TAB_BOUNCED && (
         <Card className="p-4 bg-amber-50/80 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800">
@@ -438,17 +422,6 @@ export default function Leads() {
         </Card>
       )}
 
-      <div className="flex flex-wrap gap-4 items-end">
-        <div className="flex-1 min-w-[200px] max-w-md">
-          <Input
-            label="Search"
-            placeholder="Email or name…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-      </div>
-
       {selected.size > 0 && (
         <Card className="p-4 flex flex-wrap gap-3 items-center">
           <span className="text-sm font-medium text-gray-700">{selected.size} selected</span>
@@ -456,7 +429,7 @@ export default function Leads() {
             Delete
           </Button>
           <div className="flex flex-wrap items-center gap-2">
-            <select
+            <Dropdown
               className="rounded-md border-gray-300 text-sm shadow-sm focus:ring-2 focus:ring-teal-300"
               value={bulkEnrollmentStatus}
               onChange={(e) => setBulkEnrollmentStatus(e.target.value)}
@@ -467,7 +440,7 @@ export default function Leads() {
               <option value="bounced">bounced</option>
               <option value="unsubscribed">unsubscribed</option>
               <option value="wrong_person">wrong_person</option>
-            </select>
+            </Dropdown>
             <Button type="button" variant="outline" size="sm" onClick={handleBulkStatus}>
               Apply enrollment
             </Button>

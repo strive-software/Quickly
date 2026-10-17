@@ -7,6 +7,9 @@ import LeadOutreachFields from './LeadOutreachFields';
 const field = 'block w-full rounded-md border border-gray-300 bg-white p-2 text-sm dark:border-gray-600 dark:bg-gray-800';
 const date = value => value ? new Date(value).toLocaleString() : 'Not scheduled';
 const stepNumber = value => Number.isInteger(value) ? value + 1 : '?';
+const emailKey = (item, index) => item.kind === 'sent'
+  ? item.log_id != null ? `sent:${item.log_id}` : `sent:${item.campaign_id}:${item.sequence_id}:${index}`
+  : `${item.kind}:${item.campaign_id}:${item.sequence_id}`;
 const safeUrl = value => {
   try {
     const url = new URL(value);
@@ -54,6 +57,7 @@ export default function LeadDetailsPanel({ leadId, campaignId, onClose, onSaved 
   }, [leadId, campaignId]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { setSelectedEmail(null); setDraft(null); }, [leadId, campaignId]);
   useEffect(() => {
     const previousFocus = document.activeElement;
     dialogRef.current?.querySelector('[aria-label="Close lead details"]')?.focus();
@@ -105,6 +109,7 @@ export default function LeadDetailsPanel({ leadId, campaignId, onClose, onSaved 
   }
 
   async function releaseEmail(item) {
+    if (draft) { setMessage('Save or close the open email edit before releasing a draft.'); return; }
     setBusy(true); setMessage('');
     try {
       await api.post(`/campaigns/${item.campaign_id}/leads/${leadId}/custom-email/${item.sequence_id}/release`, {
@@ -158,18 +163,18 @@ export default function LeadDetailsPanel({ leadId, campaignId, onClose, onSaved 
           <div className="flex gap-3"><button type="button" className="rounded border px-3 py-2" onClick={() => setResearch(current => ({ ...current, sources: [...current.sources, { url: '', title: '', notes: '' }] }))}>Add source</button><button type="submit" disabled={busy} className="rounded bg-teal-600 px-3 py-2 text-white disabled:opacity-50">Save research</button></div>
         </form>}
         {!loading && tab === 'emails' && <div className="space-y-3">
-          <p className="text-gray-500">Email history and upcoming steps for this lead. A saved draft stays in its current send state.</p>
+          <div className="flex items-start justify-between gap-3"><p className="text-gray-500">Email history and upcoming steps for this lead. A saved draft stays in its current send state.</p><button type="button" onClick={load} className="shrink-0 text-teal-700 underline">Refresh emails</button></div>
           {!emails.length && <p>No emails for this lead.</p>}
-          {emails.map((item, index) => <article key={`${item.campaign_id}-${item.sequence_id}-${index}`} className="rounded border p-4 dark:border-gray-700">
+          {emails.map((item, index) => <article key={emailKey(item, index)} className="rounded border p-4 dark:border-gray-700">
             <div className="flex flex-wrap items-start justify-between gap-2"><div><strong>{item.subject || '(No subject yet)'}</strong><p className="text-gray-500">{item.campaign_name} · Step {stepNumber(item.sequence_index)}</p></div><span className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-800">{emailState(item)}</span></div>
             {item.reason && <p className="mt-1 text-xs text-gray-600">{item.reason}</p>}
             <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs"><dt>From</dt><dd>{item.from_email || 'Not assigned'}</dd><dt>To</dt><dd>{item.to_email || lead?.email}</dd><dt>Schedule</dt><dd>{item.sent_at ? `Sent ${date(item.sent_at)}` : date(item.scheduled_at)}</dd></dl>
-            <div className="mt-3 flex flex-wrap gap-3"><button type="button" className="text-teal-700 underline" onClick={() => { setSelectedEmail(item); setDraft(null); }}>Preview</button>{item.editable && item.editing_source && <button type="button" className="text-teal-700 underline" onClick={() => { setSelectedEmail(item); setDraft({ subject: item.editing_source.subject ?? '', body: item.editing_source.body ?? '', is_html: item.editing_source.is_html }); }}>Edit this lead’s email</button>}{item.editable && !item.editing_source && <span className="text-xs text-amber-700">Editing source unavailable. Refresh the lead to edit.</span>}{item.editable && item.draft && <button type="button" disabled={busy} className="text-amber-700 underline disabled:opacity-50" onClick={() => releaseEmail(item)} title="Allow this saved draft to enter the send schedule">Release draft for scheduling</button>}</div>
-          </article>)}
-          {selectedEmail && <div className="rounded border border-teal-300 p-4 dark:border-teal-700">
+            <div className="mt-3 flex flex-wrap gap-3"><button type="button" className="text-teal-700 underline" onClick={() => { setSelectedEmail({ ...item, viewKey: emailKey(item, index) }); setDraft(null); }}>Preview</button>{item.editable && item.editing_source && <button type="button" className="text-teal-700 underline" onClick={() => { setSelectedEmail({ ...item, viewKey: emailKey(item, index) }); setDraft({ subject: item.editing_source.subject ?? '', body: item.editing_source.body ?? '', is_html: item.editing_source.is_html }); }}>Edit this lead’s email</button>}{item.editable && !item.editing_source && <span className="text-xs text-amber-700">Editing source unavailable. Refresh the lead to edit.</span>}{item.editable && item.draft && <button type="button" disabled={busy || !!draft} className="text-amber-700 underline disabled:opacity-50" onClick={() => releaseEmail(item)} title="Allow this saved draft to enter the send schedule">Release draft for scheduling</button>}</div>
+            {selectedEmail?.viewKey === emailKey(item, index) && <div className="mt-4 rounded border border-teal-300 p-4 dark:border-teal-700">
             <div className="flex justify-between"><h3 className="font-semibold">{draft ? 'Edit this lead’s email' : 'Email preview'}</h3><button type="button" onClick={() => { setSelectedEmail(null); setDraft(null); }} aria-label="Close email preview">×</button></div>
-            {draft ? <form onSubmit={saveEmail} className="mt-3 space-y-3"><label className="block">Subject<input className={field} placeholder={selectedEmail.sequence_index > 0 ? 'Leave blank to reply in thread' : ''} value={draft.subject} onChange={event => setDraft(current => ({ ...current, subject: event.target.value }))} /></label><label className="block">Body<textarea rows={10} className={field} value={draft.body} onChange={event => setDraft(current => ({ ...current, body: event.target.value }))} /></label><label className="flex gap-2"><input type="checkbox" checked={draft.is_html} onChange={event => setDraft(current => ({ ...current, is_html: event.target.checked }))} />HTML body</label><p className="text-xs text-gray-500">Saving this draft does not start or resume sending.</p><button type="submit" disabled={busy} className="rounded bg-teal-600 px-3 py-2 text-white disabled:opacity-50">Save draft</button></form> : <div className="mt-3 space-y-2"><p><strong>From:</strong> {selectedEmail.from_email || 'Not assigned'}</p><p><strong>To:</strong> {selectedEmail.to_email || lead?.email}</p><p><strong>Subject:</strong> {selectedEmail.subject || '(No subject yet)'}</p><p><strong>Schedule:</strong> {selectedEmail.sent_at ? `Sent ${date(selectedEmail.sent_at)}` : date(selectedEmail.scheduled_at)}</p><p><strong>Campaign step:</strong> {selectedEmail.campaign_name} · Step {stepNumber(selectedEmail.sequence_index)}</p><div className="rounded bg-gray-50 p-3 dark:bg-gray-800">{selectedEmail.body ? (selectedEmail.is_html ? <EmailContent html={selectedEmail.body} stripTracking blockImages /> : <p className="whitespace-pre-wrap">{selectedEmail.body}</p>) : <p className="text-gray-500">{selectedEmail.kind === 'sent' ? 'Body was not saved for this historical email.' : 'No content yet.'}</p>}</div></div>}
-          </div>}
+            {draft ? <form onSubmit={saveEmail} className="mt-3 space-y-3"><label className="block">Subject<input className={field} placeholder={selectedEmail.sequence_index > 0 ? 'Leave blank to reply in thread' : ''} value={draft.subject} onChange={event => setDraft(current => ({ ...current, subject: event.target.value }))} /></label><label className="block">Body<textarea rows={10} className={field} value={draft.body} onChange={event => setDraft(current => ({ ...current, body: event.target.value }))} /></label><label className="flex gap-2"><input type="checkbox" checked={draft.is_html} onChange={event => setDraft(current => ({ ...current, is_html: event.target.checked }))} />HTML body</label><p className="text-xs text-gray-500">Saving this draft does not start or resume sending.</p><button type="submit" disabled={busy} className="rounded bg-teal-600 px-3 py-2 text-white disabled:opacity-50">Save draft</button></form> : <div className="mt-3 space-y-2"><p><strong>From:</strong> {item.from_email || 'Not assigned'}</p><p><strong>To:</strong> {item.to_email || lead?.email}</p><p><strong>Subject:</strong> {item.subject || '(No subject yet)'}</p><p><strong>Schedule:</strong> {item.sent_at ? `Sent ${date(item.sent_at)}` : date(item.scheduled_at)}</p><p><strong>Campaign step:</strong> {item.campaign_name} · Step {stepNumber(item.sequence_index)}</p><div className="rounded bg-gray-50 p-3 dark:bg-gray-800">{item.body ? (item.is_html ? <EmailContent html={item.body} stripTracking blockImages /> : <p className="whitespace-pre-wrap">{item.body}</p>) : <p className="text-gray-500">{item.kind === 'sent' ? 'Body was not saved for this historical email.' : 'No content yet.'}</p>}</div></div>}
+            </div>}
+          </article>)}
         </div>}
       </div>
     </section>

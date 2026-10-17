@@ -50,9 +50,11 @@ async def test_http_and_openapi_expose_outreach_to_mcp(session):
     try:
         lead = await make_lead(session)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-            response = await client.patch(f'/api/leads/{lead.id}', json={'priority':'high', 'apollo_id':'apollo-test', 'notes':'Remember this'})
+            response = await client.patch(f'/api/leads/{lead.id}', json={'priority':'high', 'apollo_id':'apollo-test', 'notes':'Remember this', 'company':'Acme Foundation', 'job_title':'Portfolio Director'})
             assert response.status_code == 200
             assert response.json()['apollo_id'] == 'apollo-test'
+            assert [item['id'] for item in (await client.get('/api/leads?q=Acme')).json()] == [lead.id]
+            assert [item['id'] for item in (await client.get('/api/leads?q=Portfolio')).json()] == [lead.id]
             assert (await client.get('/api/leads?linkedin_pending=true')).status_code == 410
             spec = (await client.get('/openapi.json')).json()
             assert 'apollo_id' in spec['components']['schemas']['LeadUpdate']['properties']

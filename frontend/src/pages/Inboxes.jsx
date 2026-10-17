@@ -1,3 +1,4 @@
+import Dropdown from '../components/ui/Dropdown';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { api, apiCache } from '../api';
 import { Button } from '../components/ui/Button';
@@ -1683,11 +1684,11 @@ export default function Inboxes() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-700">Provider</label>
-                        <select name="provider" value={editing.provider || 'gmail'} className="mt-1 block w-full border-gray-300 rounded-md bg-gray-100 text-sm" disabled>
+                        <Dropdown name="provider" value={editing.provider || 'gmail'} className="mt-1 block w-full border-gray-300 rounded-md bg-gray-100 text-sm" disabled>
                           <option value="gmail">Gmail / Google Workspace</option>
                           <option value="office365">Office 365 / Outlook</option>
                           <option value="smtp">SMTP (any provider)</option>
-                        </select>
+                        </Dropdown>
                       </div>
                       {editing.provider === 'gmail' && <RedirectUriBlock uri={redirectUri} />}
                       {editing.provider === 'office365' && <RedirectUriBlock uri={o365RedirectUri} />}
@@ -2147,11 +2148,11 @@ export default function Inboxes() {
             <form onSubmit={submit} className="space-y-4 min-w-0 max-w-full">
               <div>
                 <label className="block text-sm font-medium text-gray-700">Provider</label>
-                <select name="provider" value={form.provider} onChange={handleProviderChange} className="mt-1 block w-full border-gray-300 rounded-md">
+                <Dropdown name="provider" value={form.provider} onChange={handleProviderChange} className="mt-1 block w-full border-gray-300 rounded-md">
                   <option value="gmail">Gmail / Google Workspace</option>
                   <option value="office365">Office 365 / Outlook</option>
                   <option value="smtp">SMTP (any provider)</option>
-                </select>
+                </Dropdown>
               </div>
 
               {form.provider === 'smtp' && (

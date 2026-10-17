@@ -5,6 +5,7 @@ import { useNotifications } from '../context/NotificationsContext';
 import { useNotify } from '../context/NotificationContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import FilterSelect from '../components/ui/FilterSelect';
 import {
   RiMailOpenLine,
   RiMailSendLine,
@@ -329,21 +330,10 @@ export default function Notifications() {
                   className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none placeholder:text-gray-400 dark:placeholder:text-gray-500"
                 />
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {filterCategories.map(cat => (
-                  <button
-                    key={cat.key ?? 'all'}
-                    type="button"
-                    onClick={() => setFilterCategory(cat.key)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
-                      filterCategory === cat.key
-                        ? 'bg-teal-500 text-white border-teal-500'
-                        : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600 hover:border-teal-300 dark:hover:border-teal-500'
-                    }`}
-                  >
-                    {cat.label}
-                  </button>
-                ))}
+              <div className="flex flex-wrap items-end gap-3">
+                <FilterSelect label="Category" value={filterCategory || ''} onChange={value => setFilterCategory(value || null)} options={filterCategories.map(cat => ({ value: cat.key || '', label: cat.label }))} className="min-w-40" />
+                {isFiltered && <button type="button" onClick={() => { setFilterCategory(null); setSearchQuery(''); }} className="pb-2 text-xs font-medium text-teal-700 underline dark:text-teal-300">Clear filters</button>}
+                <span className="pb-2 text-xs text-gray-500">{filteredItems.length} matching</span>
               </div>
             </div>
 

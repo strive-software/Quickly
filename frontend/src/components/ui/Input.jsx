@@ -25,11 +25,14 @@ const inputVariants = cva(
 
 // props include variant/size, additional label/error props
 const Input = React.forwardRef(
-  ({ label, error, className, variant, size, ...props }, ref) => {
+  ({ label, error, className, variant, size, id, ...props }, ref) => {
+    const generatedId = React.useId();
+    const inputId = id || generatedId;
     return (
       <div className="flex flex-col">
-        {label && <label className="text-sm font-medium text-gray-700 mb-1">{label}</label>}
+        {label && <label htmlFor={inputId} className="text-sm font-medium text-gray-700 mb-1">{label}</label>}
         <input
+          id={inputId}
           className={cn(inputVariants({ variant, size, class: className }))}
           ref={ref}
           {...props}

@@ -8,6 +8,7 @@ import { useConfirm } from '../context/ConfirmContext';
 import { useAppMode } from '../context/AppModeContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import FilterSelect from '../components/ui/FilterSelect';
 import {
   addDaysToDateKey,
   formatDateKey,
@@ -521,18 +522,12 @@ export default function Schedule() {
         <div className="stat-card"><div className="num" id="stat-sched">{stats.total_scheduled||0}</div><div className="lbl">Scheduled</div></div>
         <div className="stat-card"><div className="num" id="stat-camps">{stats.total_campaigns||0}</div><div className="lbl">Campaigns</div></div>
       </div>
-      <div className="cal-toolbar mb-4 flex flex-wrap gap-2 items-center">
-        <select value={campaignFilter} onChange={e=>setCampaignFilter(e.target.value)} className="border rounded p-1 text-sm">
-          <option value="">All campaigns</option>
-          {filterCampaignOptions.current.map(([id,name])=> <option key={id} value={id}>{name}</option>)}
-        </select>
-        <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} className="border rounded p-1 text-sm">
-          <option value="">All statuses</option>
-          <option value="sent">Sent</option>
-          <option value="scheduled">Scheduled</option>
-        </select>
-        <input type="text" value={searchFilter} onChange={e=>setSearchFilter(e.target.value)} placeholder="Search lead, subject…" className="border rounded p-1 text-sm" style={{maxWidth:'240px'}} />
-        <Button size="sm" variant="outline" onClick={clearFilters}>Clear</Button>
+      <div className="cal-toolbar mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-gray-50/70 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+        <FilterSelect className="min-w-44" label="Campaign" value={campaignFilter} onChange={setCampaignFilter} options={[{ value: '', label: 'All campaigns' }, ...filterCampaignOptions.current.map(([id, name]) => ({ value: String(id), label: name }))]} />
+        <FilterSelect className="min-w-40" label="Send state" value={statusFilter} onChange={setStatusFilter} options={[{ value: '', label: 'All states' }, { value: 'sent', label: 'Sent' }, { value: 'scheduled', label: 'Scheduled' }]} />
+        <label className="block text-xs font-medium text-gray-600 dark:text-gray-300"><span className="mb-1 block">Search</span><input type="search" value={searchFilter} onChange={e=>setSearchFilter(e.target.value)} placeholder="Lead, subject, inbox…" className="w-full min-w-48 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-200 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100" /></label>
+        {(campaignFilter || statusFilter || searchFilter) && <Button size="sm" variant="outline" onClick={clearFilters}>Clear filters</Button>}
+        <span className="text-xs text-gray-500">{filteredSent.length + filteredScheduled.length} matching emails</span>
         {!isProduction && (
           <>
             <Button

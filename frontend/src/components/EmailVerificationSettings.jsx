@@ -1,3 +1,4 @@
+import Dropdown from './ui/Dropdown';
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import { useNotify } from '../context/NotificationContext';
@@ -256,7 +257,7 @@ export default function EmailVerificationSettings() {
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Verification service
               </label>
-              <select
+              <Dropdown
                 className="border rounded-lg px-3 py-2 text-sm w-full max-w-xs dark:bg-gray-800 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-teal-300"
                 value={provider}
                 onChange={e => {
@@ -275,7 +276,7 @@ export default function EmailVerificationSettings() {
                       : p.replace(/_/g, ' ')}
                   </option>
                 ))}
-              </select>
+              </Dropdown>
             </div>
 
             {/* ── API key (built-in providers) ── */}
@@ -327,14 +328,14 @@ export default function EmailVerificationSettings() {
                         setCustomTestResults(null);
                       }}
                     />
-                    <select
+                    <Dropdown
                       className="border rounded-lg px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-teal-300"
                       value={customMethod}
                       onChange={e => setCustomMethod(e.target.value)}
                     >
                       <option value="GET">GET</option>
                       <option value="POST">POST</option>
-                    </select>
+                    </Dropdown>
                   </div>
                 </div>
 

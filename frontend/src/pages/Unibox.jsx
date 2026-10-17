@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify';
 import EmailContent from '../components/EmailContent';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import FilterSelect from '../components/ui/FilterSelect';
 import { useNotify } from '../context/NotificationContext';
 import { useUniboxNotifications } from '../context/UniboxNotificationsContext';
 import { buildHtmlReply, escapeHtml, formatAttributionDate } from '../utils/emailQuote';
@@ -532,20 +533,14 @@ export default function Unibox() {
               >
                 <span>{leadsOnly ? 'Leads' : 'All'}</span>
               </button>
-              {/* Lead status filter */}
-              <select
-                value={leadStatusFilter}
-                onChange={e => setLeadStatusFilter(e.target.value)}
-                className="text-xs border rounded-full px-2 py-1 bg-white text-gray-600 focus:outline-none focus:ring-1 focus:ring-teal-300"
-              >
-                {LEAD_STATUSES.map(s => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
-                ))}
-              </select>
               {/* <Button variant="outline" size="sm" onClick={triggerSync} disabled={syncing}>
                 {syncing ? 'Syncing...' : 'Sync now'}
               </Button> */}
             </div>
+          </div>
+          <div className="mb-3 flex flex-wrap items-end gap-2">
+            <FilterSelect label="Lead status" value={leadStatusFilter} onChange={setLeadStatusFilter} options={LEAD_STATUSES.map(status => ({ value: status.value, label: status.label }))} className="min-w-40 flex-1" />
+            {leadStatusFilter && <button type="button" onClick={() => setLeadStatusFilter('')} className="pb-2 text-xs font-medium text-teal-700 underline dark:text-teal-300">Clear filter</button>}
           </div>
 
           {listLoading && <p className="text-sm text-gray-500">Loading conversations...</p>}

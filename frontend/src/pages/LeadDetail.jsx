@@ -87,7 +87,7 @@ export default function LeadDetail() {
             <span className="mx-2">/</span>
             <span className="font-mono text-xs">#{lead.id}</span>
           </div>
-          <h1 className="text-2xl font-semibold"><LeadName name={lead.name} linkedinUrl={lead.linkedin_url} fallback={lead.email} /></h1>
+          <h1 className="text-2xl font-semibold"><LeadName name={lead.name} linkedinUrl={lead.linkedin_url} leadId={lead.id} fallback={lead.email} /></h1>
           <p className="text-gray-600 mt-1 font-mono text-sm">{lead.email}</p>
         </div>
         <Button as={Link} to="/unibox" variant="outline" size="sm">

@@ -508,7 +508,7 @@ export default function Leads() {
                       {l.email}
                     </button>
                   </td>
-                  <td className="p-2 align-top"><LeadName name={l.name} linkedinUrl={l.linkedin_url} /></td>
+                  <td className="p-2 align-top"><LeadName name={l.name} linkedinUrl={l.linkedin_url} leadId={l.id} /></td>
                   <td className="p-2 align-top">{l.job_title || '—'}</td>
                   <td className="p-2 align-top">{l.company || '—'}</td>
                   <td className="p-2 align-top">

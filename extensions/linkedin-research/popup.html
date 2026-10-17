@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LinkedIn research</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>LinkedIn research</h1>
+    <p>Open a lead’s LinkedIn link from Quickly, then capture the text on this page.</p>
+    <button id="connect" hidden>Use this tab as Quickly</button>
+    <p id="connected"></p>
+    <div class="actions">
+      <button id="capture-selection">Capture selection</button>
+      <button id="capture-page">Capture visible page</button>
+    </div>
+    <label for="preview">Captured text <span id="count"></span></label>
+    <textarea id="preview" rows="11" placeholder="Capture text, then review or edit it here."></textarea>
+    <label for="crm-tab">Save to Quickly tab</label>
+    <select id="crm-tab"></select>
+    <button id="save" disabled>Save to lead research</button>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

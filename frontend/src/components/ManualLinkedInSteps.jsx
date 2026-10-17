@@ -2,6 +2,7 @@ import Dropdown from './ui/Dropdown';
 import LeadName from './LeadName';
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { rememberLinkedInLead } from '../linkedinCapture';
 import { Button } from './ui/Button';
 
 const inputClass = 'block w-full rounded border border-gray-300 bg-white p-2 mt-1';
@@ -43,9 +44,9 @@ function LeadManualStep({ campaignId, initial }) {
     finally { setBusy(false); }
   }
   return <form onSubmit={save} className="border rounded-lg p-4 space-y-3" aria-label={`LinkedIn for ${initial.email}`}>
-    <div><strong><LeadName name={initial.name} linkedinUrl={initial.linkedin_url} fallback={initial.email} /></strong> <span className="text-sm text-gray-500">{initial.email} · {initial.priority} priority</span></div>
+    <div><strong><LeadName name={initial.name} linkedinUrl={initial.linkedin_url} leadId={initial.lead_id} fallback={initial.email} /></strong> <span className="text-sm text-gray-500">{initial.email} · {initial.priority} priority</span></div>
     <p className="text-sm">{saved.sent ? 'Done' : 'Pending'} · {saved.ignored ? 'Ignored' : saved.mode === 'ignore' ? 'Does not hold email' : saved.sent ? 'Completed' : saved.ready ? 'Ready — waiting for manual completion' : 'Not ready'}</p>
-    {initial.linkedin_url && /^https:\/\/([a-z0-9-]+\.)*linkedin\.com\//i.test(initial.linkedin_url) && <a className="text-teal-700 underline" href={initial.linkedin_url} target="_blank" rel="noreferrer">Open LinkedIn profile</a>}
+    {initial.linkedin_url && /^https:\/\/([a-z0-9-]+\.)*linkedin\.com\//i.test(initial.linkedin_url) && <a className="text-teal-700 underline" href={initial.linkedin_url} target="_blank" rel="noreferrer" onClick={() => rememberLinkedInLead(initial.lead_id, initial.linkedin_url)}>Open LinkedIn profile</a>}
     <fieldset disabled={busy} className="space-y-3">
     <label className="block">Message<textarea className={inputClass} rows={4} maxLength={10000} value={form.message} onChange={e => change('message', e.target.value)} /></label>
     <label className="block">Status<Dropdown className={inputClass} value={form.sent ? 'done' : 'pending'} onChange={e => setForm(old => ({ ...old, sent: e.target.value === 'done', sent_at: e.target.value === 'done' ? old.sent_at : '' }))}>

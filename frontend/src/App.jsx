@@ -21,6 +21,7 @@ import SplashScreen from './components/SplashScreen';
 import { DarkModeProvider } from './context/DarkModeContext';
 import { SystemHealthProvider } from './context/SystemHealthContext';
 import { NotificationsProvider } from './context/NotificationsContext';
+import { CAPTURE_CONTEXT_KEY, CAPTURE_REQUEST_EVENT, CAPTURE_RESULT_EVENT, captureLeadContext, validCapture, saveLinkedInCapture } from './linkedinCapture';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -41,6 +42,31 @@ function AppRoutes() {
     if (user) {
       api.post('/settings/known-ips/heartbeat', {}).catch(() => {});
     }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    async function receiveCapture(event) {
+      const { nonce, capture } = event.detail || {};
+      if (typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce)) return;
+      const respond = (ok, message, leadId) => window.dispatchEvent(new CustomEvent(CAPTURE_RESULT_EVENT, {
+        detail: { nonce, ok, message, leadId },
+      }));
+      const context = captureLeadContext(localStorage.getItem(CAPTURE_CONTEXT_KEY));
+      if (!validCapture(capture, context)) {
+        respond(false, 'Open this lead’s LinkedIn profile from the CRM, then capture that profile within 30 minutes.');
+        return;
+      }
+      try {
+        await saveLinkedInCapture(context.leadId, capture);
+        localStorage.removeItem(CAPTURE_CONTEXT_KEY);
+        respond(true, 'Saved LinkedIn text in the lead’s research sources.', context.leadId);
+      } catch (error) {
+        respond(false, error.message || 'Could not save research.');
+      }
+    }
+    window.addEventListener(CAPTURE_REQUEST_EVENT, receiveCapture);
+    return () => window.removeEventListener(CAPTURE_REQUEST_EVENT, receiveCapture);
   }, [user]);
 
   if (loading) {

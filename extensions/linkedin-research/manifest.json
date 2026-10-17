@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Quickly LinkedIn Research",
+  "version": "0.1.0",
+  "description": "Manually capture visible LinkedIn text into the selected Quickly lead.",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "Capture LinkedIn research",
+    "default_popup": "popup.html"
+  }
+}

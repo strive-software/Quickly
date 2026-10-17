@@ -9,7 +9,8 @@ export function rememberLinkedInLead(leadId, profileUrl) {
   if (!Number.isInteger(Number(leadId)) || Number(leadId) <= 0) return;
   try {
     const url = new URL(profileUrl);
-    if (url.protocol !== 'https:' || !/(^|\.)linkedin\.com$/.test(url.hostname)) return;
+    if (url.protocol !== 'https:' || !/(^|\.)linkedin\.com$/.test(url.hostname) ||
+        !url.pathname.startsWith('/in/')) return;
     localStorage.setItem(CAPTURE_CONTEXT_KEY, JSON.stringify({
       leadId: Number(leadId), profile: url.pathname.replace(/\/$/, ''), at: Date.now(),
     }));
@@ -43,14 +44,13 @@ export async function saveLinkedInCapture(leadId, capture) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const current = await api.get(`/leads/${leadId}/research`);
     const source = {
-      url: capture.url,
+      url: new URL(capture.url).origin + new URL(capture.url).pathname.replace(/\/$/, ''),
       title: `LinkedIn capture · ${String(capture.title || 'Profile').slice(0, 480)}`,
       notes: capture.text.trim(),
     };
     const sources = [...(current.sources || [])];
-    const index = sources.findIndex(item => item.url === source.url && item.title?.startsWith('LinkedIn capture · '));
-    if (index >= 0) sources[index] = source;
-    else sources.push(source);
+    // Preserve manually edited research; each capture is a separate source.
+    sources.push(source);
     try {
       return await api.put(`/leads/${leadId}/research`, {
         summary: current.summary || '', sources, expected_updated_at: current.updated_at || null,

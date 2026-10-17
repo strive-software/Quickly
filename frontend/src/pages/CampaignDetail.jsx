@@ -991,7 +991,7 @@ function LeadsTab({ leads, campaignId, refresh, onViewQueue }) {
                     <div><button type="button" className="mt-1 text-xs text-gray-500 underline hover:text-teal-700" onClick={() => onViewQueue?.(l.email)}>View queue</button></div>
                   </td>
                   {/* name */}
-                  <td className="px-4 py-2.5 text-gray-700"><LeadName name={l.name} linkedinUrl={l.linkedin_url} leadId={l.id} fallback={<span className="text-gray-300">—</span>} /></td>
+                  <td className="px-4 py-2.5 text-gray-700"><LeadName name={l.name} linkedinUrl={l.linkedin_url} leadId={l.lead_id} fallback={<span className="text-gray-300">—</span>} /></td>
                   <td className="px-4 py-2.5 text-gray-700">{l.job_title || '—'}</td>
                   <td className="px-4 py-2.5 text-gray-700">{l.company || '—'}</td>
                   {/* status badges */}
@@ -2260,7 +2260,7 @@ function PreviewModal({ sequence, campaignId, leads, onClose, variant = null, ed
             ))}
           </Dropdown>
           {selectedLead?.name && selectedLead?.linkedin_url && (
-            <LeadName name={selectedLead.name} linkedinUrl={selectedLead.linkedin_url} leadId={selectedLead.id} />
+            <LeadName name={selectedLead.name} linkedinUrl={selectedLead.linkedin_url} leadId={selectedLead.lead_id} />
           )}
           {preview?.tracking_note && (
             <span className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
@@ -2552,7 +2552,7 @@ function PersonalizedSequenceSection({ sequence, sequences, personalizedSequence
                   <tr key={l.lead_id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="px-3 py-2">
                       <span className="font-mono text-xs">{l.email}</span>
-                      {l.name && <span className="text-gray-400 text-xs ml-1">(<LeadName name={l.name} linkedinUrl={l.linkedin_url} leadId={l.id} />)</span>}
+                      {l.name && <span className="text-gray-400 text-xs ml-1">(<LeadName name={l.name} linkedinUrl={l.linkedin_url} leadId={l.lead_id} />)</span>}
                     </td>
                     {personalizedSequences.length > 1 && (
                       <td className="px-3 py-2">
@@ -2683,7 +2683,7 @@ function CustomEmailEditorModal({ target, campaignId, onClose, onSaved }) {
           <div>
             <h2 className="font-semibold text-gray-800">Custom Email</h2>
             <p className="text-xs text-gray-400">
-              {lead.email}{lead.name && <> — <LeadName name={lead.name} linkedinUrl={lead.linkedin_url} leadId={lead.id} /></>}
+              {lead.email}{lead.name && <> — <LeadName name={lead.name} linkedinUrl={lead.linkedin_url} leadId={lead.lead_id} /></>}
               {' · '}Step {(sequence.position ?? 0) + 1}
             </p>
           </div>

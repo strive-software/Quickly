@@ -33,7 +33,7 @@ test('a CRM-linked manual capture saves text to the matching lead without replac
     return page.evaluate(url => new Promise(resolve => {
       const nonce = 'a'.repeat(32);
       const onResult = event => {
-        if (event.detail?.nonce !== nonce) return;
+        if (event.detail?.nonce !== nonce || event.detail?.stage === 'received') return;
         window.removeEventListener('quickly:linkedin-capture-result', onResult);
         resolve(event.detail);
       };
@@ -50,6 +50,6 @@ test('a CRM-linked manual capture saves text to the matching lead without replac
   expect(writes).toHaveLength(1);
   expect(writes[0].summary).toBe('Keep this summary');
   expect(writes[0].sources[0]).toMatchObject({
-    url: 'https://www.linkedin.com/in/alex/', notes: 'VP Operations at Acme',
+    url: 'https://www.linkedin.com/in/alex', notes: 'VP Operations at Acme',
   });
 });

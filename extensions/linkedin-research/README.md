@@ -12,6 +12,10 @@ undetectability guarantee is made.
    choose **Load unpacked**.
 2. Select this `extensions/linkedin-research` directory.
 3. Pin **Quickly LinkedIn Research** to the toolbar.
+4. Open your signed-in Quickly tab, click the extension, and choose
+   **Use this tab as Quickly**. Chrome asks for access to that specific
+   CRM origin. The extension remembers it for later captures. HTTPS is
+   required except for localhost or a private LAN test server.
 
 ## Use
 
@@ -20,8 +24,8 @@ undetectability guarantee is made.
    30 minutes in this browser.
 2. On the LinkedIn page, click the extension. Capture selected text or the
    visible page, then review and edit the preview.
-3. Choose the Quickly tab and click **Save to lead research**. On first use,
-   Chrome asks for access to that CRM origin. The text is saved to a LinkedIn
+3. Choose the connected Quickly tab and click **Save to lead research**.
+   The text is saved to a LinkedIn
    source entry for the lead; an existing research summary is preserved.
 4. Return to the lead's Research tab to review or edit the saved text.
 

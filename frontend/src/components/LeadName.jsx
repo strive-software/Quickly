@@ -19,7 +19,8 @@ export default function LeadName({ name, linkedinUrl, leadId, fallback = '—' }
     <a href={href} target="_blank" rel="noopener noreferrer"
       className="text-teal-600 dark:text-teal-400 underline underline-offset-2 hover:text-teal-500"
       title="Open LinkedIn profile in a new tab"
-      onClick={event => { event.stopPropagation(); rememberLinkedInLead(leadId, href); }}>
+      onClick={event => { event.stopPropagation(); rememberLinkedInLead(leadId, href); }}
+      onAuxClick={event => { if (event.button === 1) rememberLinkedInLead(leadId, href); }}>
       {name}
     </a>
   );

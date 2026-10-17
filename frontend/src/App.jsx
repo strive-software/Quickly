@@ -49,20 +49,25 @@ function AppRoutes() {
     async function receiveCapture(event) {
       const { nonce, capture } = event.detail || {};
       if (typeof nonce !== 'string' || !/^[a-f0-9]{32}$/.test(nonce)) return;
-      const respond = (ok, message, leadId) => window.dispatchEvent(new CustomEvent(CAPTURE_RESULT_EVENT, {
-        detail: { nonce, ok, message, leadId },
+      const respond = (ok, message, leadId, stage = 'complete') => window.dispatchEvent(new CustomEvent(CAPTURE_RESULT_EVENT, {
+        detail: { nonce, ok, message, leadId, stage },
       }));
-      const context = captureLeadContext(localStorage.getItem(CAPTURE_CONTEXT_KEY));
+      const rawContext = localStorage.getItem(CAPTURE_CONTEXT_KEY);
+      const context = captureLeadContext(rawContext);
       if (!validCapture(capture, context)) {
         respond(false, 'Open this lead’s LinkedIn profile from the CRM, then capture that profile within 30 minutes.');
         return;
       }
+      respond(null, 'Saving research…', context.leadId, 'received');
       try {
         await saveLinkedInCapture(context.leadId, capture);
-        localStorage.removeItem(CAPTURE_CONTEXT_KEY);
+        if (localStorage.getItem(CAPTURE_CONTEXT_KEY) === rawContext) localStorage.removeItem(CAPTURE_CONTEXT_KEY);
+        window.dispatchEvent(new CustomEvent('quickly:research-updated', { detail: { leadId: context.leadId } }));
         respond(true, 'Saved LinkedIn text in the lead’s research sources.', context.leadId);
       } catch (error) {
-        respond(false, error.message || 'Could not save research.');
+        respond(false, error.status === 401 ? 'Sign in to Quickly again.' :
+          error.status === 409 ? 'Research changed while saving. Try again.' :
+            error.message || 'Could not save research.');
       }
     }
     window.addEventListener(CAPTURE_REQUEST_EVENT, receiveCapture);
